@@ -7,9 +7,10 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [Cita::class], version = 8, exportSchema = false)
+@Database(entities = [Cita::class, Gasto::class], version = 10, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun citaDao(): CitaDao
+    abstract fun gastoDao(): GastoDao
 
     companion object {
         @Volatile
@@ -36,6 +37,25 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** 8 → 9: fecha en que cada cita quedó pagada del todo (para Ganancias), sin borrar nada. */
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE citas_tatuajes ADD COLUMN fechaCobro TEXT NOT NULL DEFAULT ''")
+                // Citas antiguas ya terminadas y pagadas: cuentan en el mes de la cita
+                db.execSQL("UPDATE citas_tatuajes SET fechaCobro = fecha WHERE terminado = 1 AND pendiente IN ('', '0', '0.0')")
+            }
+        }
+
+        /** 9 → 10: tabla de gastos (pestaña $). No toca las citas. */
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `gastos` (`id` TEXT NOT NULL, `concepto` TEXT NOT NULL, " +
+                        "`importe` TEXT NOT NULL, `fecha` TEXT NOT NULL, `categoria` TEXT NOT NULL, PRIMARY KEY(`id`))"
+                )
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -45,7 +65,7 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                     // ⚠️ IMPORTANTE: cada vez que cambies la clase Cita, sube la versión y añade
                     // aquí su Migration. Sin migración, la línea de abajo BORRA todas las citas.
-                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8)
+                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

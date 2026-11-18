@@ -21,7 +21,8 @@ interface CitaDao {
     @Query("SELECT * FROM citas_tatuajes WHERE fotoPath IS NOT NULL ORDER BY fecha DESC")
     fun obtenerGaleria(): Flow<List<Cita>>
 
-    @Query("SELECT * FROM citas_tatuajes WHERE terminado = 1 AND abonado != '0' AND abonado != '0.0' AND abonado != '' ORDER BY fecha DESC")
+    // Ganancias: solo citas terminadas y pagadas del todo (tienen fecha de cobro)
+    @Query("SELECT * FROM citas_tatuajes WHERE fechaCobro != '' ORDER BY substr(fechaCobro, 7, 4) || substr(fechaCobro, 4, 2) || substr(fechaCobro, 1, 2) DESC")
     fun obtenerGanancias(): Flow<List<Cita>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

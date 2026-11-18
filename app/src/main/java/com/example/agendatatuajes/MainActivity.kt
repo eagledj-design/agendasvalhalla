@@ -113,6 +113,7 @@ fun AppAgendaPermanente() {
     val context = LocalContext.current
     val database = remember { AppDatabase.getDatabase(context) }
     val citaDao = database.citaDao()
+    val gastoDao = database.gastoDao()
     val coroutineScope = rememberCoroutineScope()
 
     var modoApp by remember { mutableIntStateOf(0) } // 0:Pendientes, 1:Form, 2:Terminadas, 3:Cobros, 4:Galeria, 5:Camara, 6:Ganancias
@@ -127,6 +128,7 @@ fun AppAgendaPermanente() {
     val listaCobrosPendientes by citaDao.obtenerCobrosPendientes().collectAsState(initial = emptyList())
     val listaGaleria by citaDao.obtenerGaleria().collectAsState(initial = emptyList())
     val listaGanancias by citaDao.obtenerGanancias().collectAsState(initial = emptyList())
+    val listaGastos by gastoDao.obtenerTodos().collectAsState(initial = emptyList())
 
     // 🔄 Conexión con n8n: envía la cita en segundo plano (si no hay internet, se reintenta al abrir la app)
     fun sincronizar(cita: Cita, accion: String = "guardar") {
@@ -185,7 +187,7 @@ fun AppAgendaPermanente() {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(when(modoApp) { 0->"PENDIENTES"; 1->if(citaAEditar==null)"NUEVA" else "EDITAR"; 2->"FINALIZADAS"; 3->"COBROS"; 4->"GALERÍA"; 6->"GANANCIAS"; else->"CÁMARA" }, color = Color.White) },
+                title = { Text(when(modoApp) { 0->"PENDIENTES"; 1->if(citaAEditar==null)"NUEVA" else "EDITAR"; 2->"FINALIZADAS"; 3->"COBROS"; 4->"GALERÍA"; 6->"FINANZAS"; else->"CÁMARA" }, color = Color.White) },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFF0A0A0A)),
                 actions = {
                     if (modoApp != 0) IconButton(onClick = { modoApp = 0; citaAEditar = null; citaParaAccion = null }) { Icon(Icons.AutoMirrored.Filled.List, "Pendientes", tint = Color.White) }
@@ -204,11 +206,16 @@ fun AppAgendaPermanente() {
 
             when (modoApp) {
                 0 -> PantallaListaCitas(listaPendientes, { modoApp = 1 }, { borrarYSincronizar(it) }, { citaAEditar = it; modoApp = 1 }, { citaParaAccion = it; mostrarDialogoPago = true }, { intentarAbrirCamara(it) }, false)
-                1 -> FormularioCita(citaAEditar) { coroutineScope.launch { citaDao.insertarCita(it); if(!it.terminado) programarAlarmaLocal(context, it); modoApp = 0; citaAEditar = null; sincronizar(it) } }
+                1 -> FormularioCita(citaAEditar) { coroutineScope.launch { val c = it.conFechaCobro(); citaDao.insertarCita(c); if(!c.terminado) programarAlarmaLocal(context, c); modoApp = 0; citaAEditar = null; sincronizar(c) } }
                 2 -> PantallaListaCitas(listaTerminadas, { modoApp = 1 }, { borrarYSincronizar(it) }, { citaAEditar = it; modoApp = 1 }, {}, { intentarAbrirCamara(it) }, true)
                 3 -> PantallaListaCitas(listaCobrosPendientes, { modoApp = 1 }, { borrarYSincronizar(it) }, { citaAEditar = it; modoApp = 1 }, {}, { intentarAbrirCamara(it) }, true, onCobrar = { citaACobrar = it })
                 4 -> PantallaGaleria(listaGaleria) { borrarYSincronizar(it) }
-                6 -> PantallaGanancias(listaGanancias)
+                6 -> PantallaGanancias(
+                    citas = listaGanancias,
+                    gastos = listaGastos,
+                    onGuardarGasto = { g -> coroutineScope.launch { gastoDao.guardar(g) } },
+                    onBorrarGasto = { g -> coroutineScope.launch { gastoDao.borrar(g) } }
+                )
                 5 -> CameraWithFrameScreen(onImageCaptured = { bitmap ->
                     citaParaAccion?.let { cita ->
                         coroutineScope.launch {
@@ -235,7 +242,7 @@ fun AppAgendaPermanente() {
             citaACobrar?.let { c ->
                 DialogoRegistrarPago(c, { citaACobrar = null }) { actualizada ->
                     coroutineScope.launch {
-                        citaDao.insertarCita(actualizada)
+                        citaDao.insertarCita(actualizada.conFechaCobro())
                         sincronizar(actualizada)
                         citaACobrar = null
                         Toast.makeText(context, "Pago apuntado", Toast.LENGTH_SHORT).show()
@@ -247,11 +254,12 @@ fun AppAgendaPermanente() {
                 DialogoFinalizarCita(citaParaAccion!!, { mostrarDialogoPago = false }) { citaActualizada ->
                     coroutineScope.launch {
                         try {
-                            citaDao.insertarCita(citaActualizada.copy(sincronizado = false))
-                            cancelarAlarma(context, citaActualizada)
-                            sincronizar(citaActualizada) // n8n la marca como terminada y no manda recordatorio
+                            val c = citaActualizada.copy(sincronizado = false).conFechaCobro()
+                            citaDao.insertarCita(c)
+                            cancelarAlarma(context, c)
+                            sincronizar(c) // n8n la marca como terminada y no manda recordatorio
                             mostrarDialogoPago = false
-                            intentarAbrirCamara(citaActualizada)
+                            intentarAbrirCamara(c) // la foto se guarda sobre "c", así no se pierde la fecha de cobro
                         } catch (e: Exception) {
                             Toast.makeText(context, "Error al actualizar cita", Toast.LENGTH_SHORT).show()
                         }
@@ -424,7 +432,7 @@ fun FormularioCita(cita: Cita?, onSave: (Cita) -> Unit) {
             if(cliente.isNotEmpty() && fecha.length>=8 && hora.length>=4) {
                 val f = "${fecha.substring(0,2)}/${fecha.substring(2,4)}/${fecha.substring(4)}"
                 val h = "${hora.substring(0,2)}:${hora.substring(2)}"
-                onSave(Cita(cita?.id ?: UUID.randomUUID().toString(), cliente, tel, f, h, direccion, horas.replace(',', '.'), notas, cita?.terminado?:false, guardarNum(num(abonado) ?: 0.0), guardarNum(pendiente), cita?.fotoPath, recordatorio, email = email, sincronizado = false, estadoCliente = cita?.estadoCliente ?: "", tarifaHora = if (fijo) "" else guardarNum(num(tarifa) ?: precioHora(ctx)), totalFijo = if (fijo) guardarNum(total) else ""))
+                onSave(Cita(cita?.id ?: UUID.randomUUID().toString(), cliente, tel, f, h, direccion, horas.replace(',', '.'), notas, cita?.terminado?:false, guardarNum(num(abonado) ?: 0.0), guardarNum(pendiente), cita?.fotoPath, recordatorio, email = email, sincronizado = false, estadoCliente = cita?.estadoCliente ?: "", tarifaHora = if (fijo) "" else guardarNum(num(tarifa) ?: precioHora(ctx)), totalFijo = if (fijo) guardarNum(total) else "", fechaCobro = cita?.fechaCobro ?: ""))
             }
         }, Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Color.Red)) { Text("GUARDAR") }
     }
@@ -716,110 +724,4 @@ class TimeVisualTransformation : VisualTransformation {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun PantallaGanancias(citas: List<Cita>) {
-    val context = LocalContext.current
-    
-    // Agrupar las citas por mes y año (tomando los últimos 7 caracteres de "DD/MM/YYYY")
-    val agrupado = citas.groupBy { 
-        if (it.fecha.length >= 7) it.fecha.takeLast(7) else "Desconocido" 
-    }
-    
-    val currentMonthYear = SimpleDateFormat("MM/yyyy", Locale.getDefault()).format(Date())
-    var mesSeleccionado by remember { mutableStateOf(currentMonthYear) }
-    
-    val citasDelMes = agrupado[mesSeleccionado] ?: emptyList()
-    val totalGanado = citasDelMes.sumOf { num(it.abonado) ?: 0.0 }
-    
-    var expanded by remember { mutableStateOf(false) }
-    val mesesDisponibles = agrupado.keys.toList().let { 
-        if (it.contains(currentMonthYear)) it else it + currentMonthYear 
-    }.distinct().sortedByDescending {
-        try { SimpleDateFormat("MM/yyyy", Locale.getDefault()).parse(it) } catch (e: Exception) { Date(0) }
-    }
-
-    Box(Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize().padding(16.dp)) {
-            // Selector de mes
-            ExposedDropdownMenuBox(
-                expanded = expanded,
-                onExpandedChange = { expanded = !expanded },
-                modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)
-            ) {
-                OutlinedTextField(
-                    value = "Mes: $mesSeleccionado",
-                    onValueChange = {},
-                    readOnly = true,
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                    colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedBorderColor = Color.Green),
-                    modifier = Modifier.menuAnchor().fillMaxWidth()
-                )
-                ExposedDropdownMenu(
-                    expanded = expanded,
-                    onDismissRequest = { expanded = false },
-                    modifier = Modifier.background(Color(0xFF1A1A1A))
-                ) {
-                    mesesDisponibles.forEach { mes ->
-                        DropdownMenuItem(
-                            text = { Text(mes, color = Color.White) },
-                            onClick = { mesSeleccionado = mes; expanded = false }
-                        )
-                    }
-                }
-            }
-            
-            Card(
-                Modifier.fillMaxWidth().padding(bottom = 16.dp),
-                colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1A1A))
-            ) {
-                Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("TOTAL DEL MES", color = Color.Gray, style = MaterialTheme.typography.titleMedium)
-                    Text("${mostrarNum(totalGanado)} €", color = Color.Green, style = MaterialTheme.typography.headlineLarge)
-                }
-            }
-            
-            if (citasDelMes.isEmpty()) {
-                Box(Modifier.fillMaxSize().weight(1f), contentAlignment = Alignment.Center) {
-                    Text("No hay ganancias registradas en $mesSeleccionado", color = Color.Gray)
-                }
-            } else {
-                LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(citasDelMes) { cita ->
-                        Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1A1A))) {
-                            Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(cita.cliente, color = Color.White, style = MaterialTheme.typography.titleMedium)
-                                    Text("${cita.fecha} - ${cita.hora}", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
-                                }
-                                Text("+ ${mostrarNum(num(cita.abonado) ?: 0.0)} €", color = Color.Green, style = MaterialTheme.typography.titleMedium)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Botón flotante para enviar por correo las "facturas" del mes
-        FloatingActionButton(
-            onClick = {
-                val texto = "Resumen de Ganancias - $mesSeleccionado\n" +
-                            "Total Mensual: ${mostrarNum(totalGanado)} €\n\n" +
-                            "Detalle de trabajos:\n" +
-                            citasDelMes.joinToString("\n") { "- ${it.fecha}: ${it.cliente} -> ${mostrarNum(num(it.abonado) ?: 0.0)} €" }
-                
-                val intent = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"
-                    putExtra(Intent.EXTRA_SUBJECT, "Facturación - $mesSeleccionado")
-                    putExtra(Intent.EXTRA_TEXT, texto)
-                }
-                context.startActivity(Intent.createChooser(intent, "Enviar resumen mensual por..."))
-            },
-            containerColor = Color.Green,
-            contentColor = Color.Black,
-            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)
-        ) {
-            Icon(Icons.Default.Email, contentDescription = "Enviar por correo")
-        }
-    }
-}
+// La pestaña $ (PantallaGanancias) está en Finanzas.kt

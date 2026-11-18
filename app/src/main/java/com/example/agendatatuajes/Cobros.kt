@@ -15,6 +15,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.math.max
 import kotlin.math.roundToLong
@@ -94,6 +96,21 @@ fun Cita.detalleTotal(context: Context): String =
     else "${horas.ifBlank { "0" }} h × ${mostrarNum(precioDeLaCita(context))} €/h = ${mostrarNum(total(context))} €"
 
 fun calcularPendiente(total: Double, abonado: Double): Double = max(0.0, total - abonado)
+
+/** Hoy en formato "dd/MM/yyyy". */
+fun hoy(): String = SimpleDateFormat("dd/MM/yyyy", Locale.US).format(Date())
+
+/**
+ * Pone la fecha de cobro cuando la cita queda terminada y sin nada pendiente
+ * (respeta la que ya tuviera) y la quita si vuelve a deber algo.
+ * Llamar SIEMPRE antes de guardar una cita.
+ */
+fun Cita.conFechaCobro(): Cita =
+    if (terminado && (num(pendiente) ?: 0.0) <= 0.0) copy(fechaCobro = fechaCobro.ifBlank { hoy() })
+    else copy(fechaCobro = "")
+
+/** "11/2026" a partir de "dd/MM/yyyy". */
+fun mesDe(fecha: String): String = if (fecha.length >= 7) fecha.takeLast(7) else ""
 
 /** Ajustes: forma de cobrar y precio por hora. */
 @Composable

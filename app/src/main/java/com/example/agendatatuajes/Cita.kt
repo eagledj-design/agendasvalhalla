@@ -28,5 +28,9 @@ data class Cita(
     // Precio por hora con el que se calculó esta cita ("" en citas antiguas → se usa el de Ajustes)
     val tarifaHora: String = "",
     // Precio cerrado de la cita (modo "precio fijo"). Si tiene valor, el total es este y no horas × precio/hora.
-    val totalFijo: String = ""
+    val totalFijo: String = "",
+    // ── Nuevo en la versión 9 ──
+    // "dd/MM/yyyy" del día en que la cita quedó terminada y pagada del todo ("" si aún no).
+    // La pestaña de Ganancias cuenta cada cita en el mes de esta fecha.
+    val fechaCobro: String = ""
 )
