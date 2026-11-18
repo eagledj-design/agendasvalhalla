@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    CONFIGURACIÓN DE ESTA AGENDA (cámbiala en cada copia, igual que fondo.png y marco.png)
+
+    agenda_id_clienta  → el id_clienta de la hoja Clientas (empieza por ES o CO). Te lo manda el bot ADMIN al aprobar el alta.
+    agenda_api_key     → la clave de la columna api_key de esa clienta. También te la manda el bot ADMIN.
+    agenda_pais        → ES o CO (decide a qué hoja y a qué webhook van las citas).
+    agenda_base_url    → la URL pública de tu n8n, sin "/" al final.
+    agenda_servicio    → cómo se llama el servicio en los recordatorios a los clientes ("Limpieza", "Tatuaje", "Manicura"...).
+    agenda_modo_cobro  → "horas" (limpieza, cuidados: horas × precio/hora) o "fijo" (tatuajes, uñas: precio cerrado por trabajo).
+                         Es el modo INICIAL: la profesional lo puede cambiar en Ajustes.
+    agenda_precio_hora → precio por hora INICIAL. La profesional lo cambia luego en la app (rueda dentada → Ajustes).
+    agenda_bot_recordatorios → bot de Telegram que avisa a los clientes finales (España: Agenda_RecordES_Bot · Colombia: Agenda_RecordCOL_Bot).
+-->
+<resources>
+    <string name="agenda_base_url" translatable="false">https://raslinux.tail088b3f.ts.net</string>
+    <string name="agenda_pais" translatable="false">ES</string>
+    <string name="agenda_id_clienta" translatable="false">PON_AQUI_EL_ID_CLIENTA</string>
+    <string name="agenda_api_key" translatable="false">PON_AQUI_LA_API_KEY</string>
+    <string name="agenda_servicio" translatable="false">Limpieza</string>
+    <string name="agenda_modo_cobro" translatable="false">horas</string>
+    <string name="agenda_precio_hora" translatable="false">12</string>
+    <!-- Usuario del bot de RECORDATORIOS del país, sin @ (el de los clientes finales, no el de soporte) -->
+    <string name="agenda_bot_recordatorios" translatable="false">Agenda_RecordES_Bot</string>
+</resources>
