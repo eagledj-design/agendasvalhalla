@@ -1,5 +1,7 @@
 PASA  · Se leen las migraciones 6→7 … 10→11 del código
 PASA  · Room la registra en addMigrations()
+PASA  · No hay fallbackToDestructiveMigration (Room no puede borrar datos en silencio)
+PASA  · Las migraciones registradas forman una cadena sin huecos de la 6 a la versión actual
 PASA  · Las 3 citas siguen ahí tras migrar 6→11
 PASA  · Los datos originales no cambian
 PASA  · fechaCobro de la migración 8→9 se conserva
@@ -30,4 +32,4 @@ PASA  · registrarFallo con un opId antiguo no toca la operación vigente
 PASA  · reintentarBloqueadas desbloquea la operación rechazada (1 intento < 5)
 PASA  · …pero no la que ya lleva 5 intentos (no reintenta para siempre)
 
-RESULTADO Room/SQLite (SQLite 3.53.1): 31/31 pruebas pasan
+RESULTADO Room/SQLite (SQLite 3.53.1): 33/33 pruebas pasan

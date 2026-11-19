@@ -88,10 +88,12 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "agenda_tatuajes_db"
                 )
-                    // ⚠️ IMPORTANTE: cada vez que cambies la clase Cita, sube la versión y añade
-                    // aquí su Migration. Sin migración, la línea de abajo BORRA todas las citas.
+                    // ⚠️ IMPORTANTE: cada vez que cambies una entidad (Cita, Gasto, OperacionSync), sube la
+                    // versión y añade aquí su Migration.
+                    // Ya NO hay fallbackToDestructiveMigration(): si faltara una migración, la app daría un
+                    // error al abrir en lugar de BORRAR en silencio las citas, gastos y operaciones pendientes
+                    // de la clienta. Un error se arregla con una actualización; datos borrados no se recuperan.
                     .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
-                    .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance
                 instance

@@ -114,8 +114,7 @@ Si la app nueva se instala antes de actualizar n8n, no se pierde nada: el flujo 
 
 ## Observaciones fuera del alcance (sin cambiar)
 
-- **`fallbackToDestructiveMigration()`** sigue activo. Solo actúa si falta una migración, por ejemplo al instalar sobre una versión 5 o anterior, pero en ese caso **borra los datos**. Recomendación: quitarlo y añadir las migraciones que falten.
-- **Cancelaciones del cliente:** si el cliente cancela por Telegram (flujo C) y la profesional edita después la cita sin cambiar la fecha, vuelve a `pendiente`. Es el comportamiento que ya existía; aquí se ha mantenido igual.
+- ~~`fallbackToDestructiveMigration()`~~ y ~~cancelaciones del cliente que vuelven a `pendiente`~~: **corregidos**, ver la última sección.
 - **Cita recreada con el mismo id:** si se volviera a crear una cita con el mismo id después de que su borrado ya se hubiera enviado, empezaría en revisión 1 y el servidor la ignoraría. No ocurre con el uso normal, porque los ids son UUID nuevos.
 
 ## Corrección posterior (prueba real en el móvil, 19/11)
@@ -142,3 +141,19 @@ Resultados tras la corrección:
 | PostgreSQL (migraciones 02 + 03, con concurrencia) | **30/30** |
 | Nodos n8n | **26/26** en ES y en CO |
 | Comprobación de tipos | 0 errores |
+
+
+## Segunda revisión de la auditoría (19/11)
+
+1. **Despliegue en orden.** Hecho y verificado en producción: migraciones 02 y 03 en los dos proyectos de Supabase, después los nodos de n8n y por último la app. La prueba real en el móvil quedó así: cita creada, editada y borrada sin conexión, y al final `cancelada` con revisión 3. La migración 04 de este cambio se aplica igual, en los dos proyectos, antes de usar la app con clientas reales.
+
+2. **`fallbackToDestructiveMigration()` eliminado.** Si faltara una migración, Room dará un error al abrir en lugar de borrar los datos en silencio. Dos pruebas nuevas en SQLite comprueban que no vuelve a aparecer y que las migraciones forman una cadena sin huecos desde la 6 hasta la versión actual. Ojo: antes de instalar AgendaBase **encima** de una agenda antigua con el mismo paquete y la misma base (`agenda_tatuajes_db`), hay que comprobar su versión de base de datos. Si es anterior a la 6, primero hay que añadir sus migraciones.
+
+3. **Cancelación del cliente respetada.** Con `migracion_04_respetar_cancelacion.sql`, si el cliente canceló (flujo C) y la profesional edita la cita **sin cambiar la fecha**, la cita sigue `cancelada` y no se reprograma el recordatorio. Si cambia la fecha, es una cita nueva y vuelve a `pendiente`. Si la marca terminada, queda `terminada`. La confirmación del cliente se respeta como antes.
+   - **Prueba específica:** 6 casos nuevos en PostgreSQL. Sin la migración 04, la prueba reproduce el fallo (`pendiente`); con ella pasa.
+
+| Suite | Resultado |
+|---|---|
+| PostgreSQL (migraciones 02 + 03 + 04, con concurrencia) | **37/37** |
+| Room/SQLite (incluye las pruebas anti-borrado y de cadena de migraciones) | **33/33** |
+| Motor + fechas (Kotlin) | **25/25** (sin cambios) |

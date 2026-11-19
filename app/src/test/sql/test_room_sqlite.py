@@ -70,6 +70,13 @@ cita_src, db_src = leer("Cita.kt"), leer("AppDataBase.kt")
 MIG = migraciones(db_src)
 caso("Se leen las migraciones 6→7 … 10→11 del código", all(k in MIG for k in [(6, 7), (7, 8), (8, 9), (9, 10), (10, 11)]), str(sorted(MIG)))
 caso("Room la registra en addMigrations()", "MIGRATION_10_11)" in db_src and "version = 11" in db_src)
+caso("No hay fallbackToDestructiveMigration (Room no puede borrar datos en silencio)",
+     "fallbackToDestructiveMigration" not in re.sub(r"//.*", "", db_src))
+version = int(re.search(r"version = (\d+)", db_src).group(1))
+registradas = re.findall(r"MIGRATION_(\d+)_(\d+)", re.search(r"addMigrations\((.*?)\)", db_src).group(1))
+cadena = sorted((int(a), int(b)) for a, b in registradas)
+caso("Las migraciones registradas forman una cadena sin huecos de la 6 a la versión actual",
+     cadena == [(v, v + 1) for v in range(6, version)], str(cadena))
 
 # ---------- base en versión 6 con datos reales de ejemplo ----------
 con = sqlite3.connect(":memory:")
