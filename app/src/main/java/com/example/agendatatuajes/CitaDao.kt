@@ -38,6 +38,17 @@ interface CitaDao {
     @Query("UPDATE citas_tatuajes SET sincronizado = 1 WHERE id = :id")
     suspend fun marcarSincronizada(id: String)
 
+    /**
+     * Marca como sincronizada SOLO si la cita sigue teniendo los mismos datos que se enviaron a n8n.
+     * Si se editó mientras se enviaba, no la marca y se volverá a enviar la versión nueva.
+     * (Es una única sentencia SQL, así que la comprobación y el cambio son atómicos.)
+     */
+    @Query("""UPDATE citas_tatuajes SET sincronizado = 1
+              WHERE id = :id AND cliente = :cliente AND telefono = :telefono AND email = :email
+                AND fecha = :fecha AND hora = :hora AND terminado = :terminado""")
+    suspend fun marcarSincronizadaSiNoCambio(id: String, cliente: String, telefono: String, email: String,
+                                             fecha: String, hora: String, terminado: Boolean): Int
+
     @Query("SELECT * FROM citas_tatuajes WHERE id = :id LIMIT 1")
     suspend fun obtenerPorId(id: String): Cita?
 
