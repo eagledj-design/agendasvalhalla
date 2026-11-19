@@ -31,12 +31,13 @@ interface CitaDao {
     @Delete
     suspend fun borrarCita(cita: Cita)
 
-    // ── Sincronización con n8n ──
-    @Query("SELECT * FROM citas_tatuajes WHERE sincronizado = 0")
-    suspend fun obtenerNoSincronizadas(): List<Cita>
+    // ── Sincronización con n8n (ver OperacionSync / CitaRepo / MotorSync) ──
+    @Query("SELECT revision FROM citas_tatuajes WHERE id = :id LIMIT 1")
+    suspend fun revisionDe(id: String): Long?
 
-    @Query("UPDATE citas_tatuajes SET sincronizado = 1 WHERE id = :id")
-    suspend fun marcarSincronizada(id: String)
+    /** Marca como sincronizada SOLO si la cita sigue en la revisión que confirmó n8n. Devuelve filas cambiadas. */
+    @Query("UPDATE citas_tatuajes SET sincronizado = 1 WHERE id = :id AND revision = :revision")
+    suspend fun marcarSincronizadaSiRevision(id: String, revision: Long): Int
 
     @Query("SELECT * FROM citas_tatuajes WHERE id = :id LIMIT 1")
     suspend fun obtenerPorId(id: String): Cita?

@@ -130,24 +130,16 @@ fun AppAgendaPermanente() {
     val listaGanancias by citaDao.obtenerGanancias().collectAsState(initial = emptyList())
     val listaGastos by gastoDao.obtenerTodos().collectAsState(initial = emptyList())
 
-    // 🔄 Conexión con n8n: envía la cita en segundo plano (si no hay internet, se reintenta al abrir la app)
-    fun sincronizar(cita: Cita, accion: String = "guardar") {
-        coroutineScope.launch {
-            if (SyncN8n.enviar(context, cita, accion)) citaDao.marcarSincronizada(cita.id)
-            else SyncN8n.programarReintento(context) // sin internet o n8n caído: se reenvía solo más tarde
-        }
-    }
+    // 🔄 Conexión con n8n: guardar y borrar pasan SIEMPRE por CitaRepo (revisión + cola en una transacción).
+    // El envío lo hace SyncN8n en segundo plano y no se pierde aunque no haya internet o n8n esté caído.
     fun borrarYSincronizar(cita: Cita) {
-        coroutineScope.launch {
-            citaDao.borrarCita(cita)
-            // Solo avisamos a n8n si la cita no estaba terminada (así se cancela su recordatorio)
-            if (!cita.terminado) SyncN8n.borrar(context, cita) // si n8n no responde, queda en cola y se reintenta
-        }
+        coroutineScope.launch { CitaRepo.borrar(context, cita) }
     }
-    // Mientras la app está abierta: reenvía lo pendiente y mira qué han respondido los clientes (cada 15 min)
+    // Mientras la app está abierta: envía lo pendiente y mira qué han respondido los clientes (cada 15 min)
     LaunchedEffect(Unit) {
+        SyncN8n.solicitar(context) // al abrir la app, por si quedó algo de la última vez
         while (true) {
-            SyncN8n.reintentarPendientes(context, citaDao)
+            SyncN8n.procesar(context)
             for (c in SyncN8n.consultarEstados(context, citaDao)) {
                 Toast.makeText(context, "❌ ${c.cliente} ha cancelado su cita del ${c.fecha} a las ${c.hora}", Toast.LENGTH_LONG).show()
             }
@@ -207,7 +199,7 @@ fun AppAgendaPermanente() {
 
             when (modoApp) {
                 0 -> PantallaListaCitas(listaPendientes, { modoApp = 1 }, { borrarYSincronizar(it) }, { citaAEditar = it; modoApp = 1 }, { citaParaAccion = it; mostrarDialogoPago = true }, { intentarAbrirCamara(it) }, false)
-                1 -> FormularioCita(citaAEditar) { coroutineScope.launch { val c = it.conFechaCobro(); citaDao.insertarCita(c); if(!c.terminado) programarAlarmaLocal(context, c); modoApp = 0; citaAEditar = null; sincronizar(c) } }
+                1 -> FormularioCita(citaAEditar) { coroutineScope.launch { val c = CitaRepo.guardar(context, it.conFechaCobro()); if(!c.terminado) programarAlarmaLocal(context, c); modoApp = 0; citaAEditar = null } }
                 2 -> PantallaListaCitas(listaTerminadas, { modoApp = 1 }, { borrarYSincronizar(it) }, { citaAEditar = it; modoApp = 1 }, {}, { intentarAbrirCamara(it) }, true)
                 3 -> PantallaListaCitas(listaCobrosPendientes, { modoApp = 1 }, { borrarYSincronizar(it) }, { citaAEditar = it; modoApp = 1 }, {}, { intentarAbrirCamara(it) }, true, onCobrar = { citaACobrar = it })
                 4 -> PantallaGaleria(listaGaleria) { borrarYSincronizar(it) }
@@ -226,7 +218,9 @@ fun AppAgendaPermanente() {
                                 bitmap.compress(Bitmap.CompressFormat.JPEG, 100, out)
                                 out.flush()
                                 out.close()
-                                citaDao.insertarCita(cita.copy(fotoPath = Uri.fromFile(file).toString()))
+                                // Se parte de la cita guardada AHORA (no de una copia antigua) para no deshacer otros cambios
+                                val actual = citaDao.obtenerPorId(cita.id) ?: cita
+                                CitaRepo.guardar(context, actual.copy(fotoPath = Uri.fromFile(file).toString()))
                                 modoApp = 0
                                 citaParaAccion = null
                                 Toast.makeText(context, "¡Foto guardada!", Toast.LENGTH_SHORT).show()
@@ -243,8 +237,7 @@ fun AppAgendaPermanente() {
             citaACobrar?.let { c ->
                 DialogoRegistrarPago(c, { citaACobrar = null }) { actualizada ->
                     coroutineScope.launch {
-                        citaDao.insertarCita(actualizada.conFechaCobro())
-                        sincronizar(actualizada)
+                        CitaRepo.guardar(context, actualizada.conFechaCobro())
                         citaACobrar = null
                         Toast.makeText(context, "Pago apuntado", Toast.LENGTH_SHORT).show()
                     }
@@ -255,10 +248,8 @@ fun AppAgendaPermanente() {
                 DialogoFinalizarCita(citaParaAccion!!, { mostrarDialogoPago = false }) { citaActualizada ->
                     coroutineScope.launch {
                         try {
-                            val c = citaActualizada.copy(sincronizado = false).conFechaCobro()
-                            citaDao.insertarCita(c)
+                            val c = CitaRepo.guardar(context, citaActualizada.conFechaCobro()) // n8n la marca como terminada
                             cancelarAlarma(context, c)
-                            sincronizar(c) // n8n la marca como terminada y no manda recordatorio
                             mostrarDialogoPago = false
                             intentarAbrirCamara(c) // la foto se guarda sobre "c", así no se pierde la fecha de cobro
                         } catch (e: Exception) {

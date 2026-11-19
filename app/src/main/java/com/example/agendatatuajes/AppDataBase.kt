@@ -7,10 +7,11 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [Cita::class, Gasto::class], version = 10, exportSchema = false)
+@Database(entities = [Cita::class, Gasto::class, OperacionSync::class], version = 11, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun citaDao(): CitaDao
     abstract fun gastoDao(): GastoDao
+    abstract fun syncDao(): SyncDao
 
     companion object {
         @Volatile
@@ -56,6 +57,30 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * 10 → 11: revisión por cita y cola persistente de operaciones para n8n. No borra nada.
+         * Las citas que aún no se habían enviado (sincronizado = 0) pasan a revisión 1 y se encolan
+         * como "guardar", para que se envíen con el sistema nuevo.
+         * (Los borrados pendientes de la versión anterior, que estaban en SharedPreferences, los
+         * importa SyncN8n.importarColaAntigua() la primera vez que se sincroniza.)
+         */
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE citas_tatuajes ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `operaciones_sync` (`idCita` TEXT NOT NULL, `opId` TEXT NOT NULL, " +
+                        "`tipo` TEXT NOT NULL, `revision` INTEGER NOT NULL, `payload` TEXT NOT NULL, `intentos` INTEGER NOT NULL, " +
+                        "`ultimoError` TEXT, `bloqueada` INTEGER NOT NULL, `creadaEn` INTEGER NOT NULL, PRIMARY KEY(`idCita`))"
+                )
+                db.execSQL("UPDATE citas_tatuajes SET revision = 1 WHERE sincronizado = 0")
+                db.execSQL(
+                    "INSERT OR IGNORE INTO operaciones_sync (idCita, opId, tipo, revision, payload, intentos, ultimoError, bloqueada, creadaEn) " +
+                        "SELECT id, lower(hex(randomblob(16))), 'guardar', 1, '', 0, NULL, 0, CAST(strftime('%s','now') AS INTEGER) * 1000 " +
+                        "FROM citas_tatuajes WHERE sincronizado = 0"
+                )
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -65,7 +90,7 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                     // ⚠️ IMPORTANTE: cada vez que cambies la clase Cita, sube la versión y añade
                     // aquí su Migration. Sin migración, la línea de abajo BORRA todas las citas.
-                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10)
+                    .addMigrations(MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11)
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance

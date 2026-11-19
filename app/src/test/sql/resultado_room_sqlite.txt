@@ -1,0 +1,30 @@
+PASA  · Se leen las migraciones 6→7 … 10→11 del código
+PASA  · Room la registra en addMigrations()
+PASA  · Las 3 citas siguen ahí tras migrar 6→11
+PASA  · Los datos originales no cambian
+PASA  · fechaCobro de la migración 8→9 se conserva
+PASA  · citas_tatuajes coincide con la entidad Cita (nombres, tipos, NOT NULL, PK)
+PASA  · operaciones_sync coincide con la entidad OperacionSync
+PASA  · gastos coincide con la entidad Gasto
+PASA  · Las citas no enviadas (a1, a3) quedan en la cola como 'guardar' rev 1
+PASA  · Revisiones: no enviadas = 1, ya enviada = 0
+PASA  · Cada operación migrada tiene un opId único
+PASA  · Consulta revisionDe encontrada en el código
+PASA  · Consulta marcarSincronizadaSiRevision encontrada en el código
+PASA  · Consulta pendientes encontrada en el código
+PASA  · Consulta deCita encontrada en el código
+PASA  · Consulta borrarSiOp encontrada en el código
+PASA  · Consulta registrarFallo encontrada en el código
+PASA  · Consulta contarBloqueadas encontrada en el código
+PASA  · Completar la operación vigente la quita y marca la cita
+PASA  · …y la cita queda sincronizada
+PASA  · Editar durante el envío sustituye la operación (una sola por cita)
+PASA  · La respuesta tardía de la revisión vieja NO quita la operación nueva ni marca la cita
+PASA  · La revisión nueva sí se completa
+PASA  · marcarSincronizadaSiRevision no marca si la revisión no coincide
+PASA  · Si algo falla a mitad del borrado, no queda nada a medias (rollback)
+PASA  · Borrar: la cita desaparece y queda UNA operación 'borrar' que sustituye al guardado pendiente
+PASA  · Una operación bloqueada no sale en pendientes() pero sigue guardada
+PASA  · registrarFallo con un opId antiguo no toca la operación vigente
+
+RESULTADO Room/SQLite (SQLite 3.53.1): 28/28 pruebas pasan

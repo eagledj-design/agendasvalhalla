@@ -32,5 +32,9 @@ data class Cita(
     // ── Nuevo en la versión 9 ──
     // "dd/MM/yyyy" del día en que la cita quedó terminada y pagada del todo ("" si aún no).
     // La pestaña de Ganancias cuenta cada cita en el mes de esta fecha.
-    val fechaCobro: String = ""
+    val fechaCobro: String = "",
+    // ── Nuevo en la versión 11 (sincronización con revisiones) ──
+    // Sube en 1 cada vez que la cita se guarda o se borra (lo hace CitaRepo). n8n/Supabase solo aplican
+    // una revisión mayor que la que ya tienen, así que una versión vieja nunca pisa a una nueva.
+    val revision: Long = 0
 )

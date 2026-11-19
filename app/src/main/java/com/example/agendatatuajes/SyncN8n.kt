@@ -5,15 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.util.Log
 import android.widget.Toast
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
-import java.net.URLEncoder
-import java.text.SimpleDateFormat
-import java.util.Locale
-import java.util.concurrent.TimeUnit
+import androidx.room.withTransaction
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -22,48 +14,42 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.UUID
+import java.util.concurrent.TimeUnit
 
 /**
- * Envía las citas a n8n (webhook /webhook/{pais}/agenda/cita-sync) para que se guarden
- * en la hoja Citas y salgan los recordatorios a los clientes.
- * La agenda sigue funcionando igual sin internet ni n8n (apagón, PC apagado...):
- *  - Citas creadas/editadas/terminadas: quedan marcadas como no sincronizadas en el móvil.
- *  - Citas BORRADAS: como ya no existen en el móvil, su aviso se guarda en una cola aparte.
- * En ambos casos se programa un reintento en segundo plano (WorkManager, con la app cerrada
- * y en cuanto haya internet) y también se reintenta cada 15 min con la app abierta.
+ * Conexión de la agenda con n8n (webhook /webhook/{pais}/agenda/cita-sync, protocolo 2).
+ *
+ * Cómo viaja un cambio:
+ *  1. CitaRepo guarda/borra la cita y, en LA MISMA transacción de Room, sube su revisión y deja la
+ *     operación en la cola persistente (tabla operaciones_sync). Si se cierra la app o se va la luz
+ *     justo después, la operación sigue ahí.
+ *  2. SyncN8n.solicitar() programa un SyncWorker (WorkManager): funciona con la app cerrada y espera a
+ *     que haya internet. Con la app abierta también se procesa cada 15 minutos.
+ *  3. MotorSync envía las operaciones de una en una y en orden, y solo las da por hechas cuando n8n
+ *     confirma {ok:true} después de guardarlas en Supabase (ver MotorSync.kt).
+ *
+ * La app nunca habla con Supabase: solo con n8n, con su id_clienta y su api_key.
  */
 object SyncN8n {
     private const val TAG = "SyncN8n"
+    private const val PROTOCOLO = 2
 
     private fun cfg(context: Context, id: Int): String = context.getString(id).trim()
 
-    private const val PREFS = "sync_n8n"
-    private const val KEY_BORRADOS = "borrados_pendientes"
-
-    /** Avisos de borrado que n8n aún no ha recibido (JSON ya montado, uno por cita). */
-    private fun borradosPendientes(context: Context): MutableSet<String> =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getStringSet(KEY_BORRADOS, emptySet())!!.toMutableSet()
-
-    private fun guardarBorrados(context: Context, set: Set<String>) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putStringSet(KEY_BORRADOS, set).apply()
-    }
-
-    /** Programa un reintento en segundo plano en cuanto haya conexión (si ya hay uno programado, no duplica). */
-    fun programarReintento(context: Context) {
-        val req = OneTimeWorkRequestBuilder<SyncWorker>()
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 2, TimeUnit.MINUTES)
-            .build()
-        WorkManager.getInstance(context).enqueueUniqueWork("sync_n8n", ExistingWorkPolicy.KEEP, req)
-    }
-
-    /** Config lista para enviar a n8n (null si config.xml está sin rellenar). */
-    private fun configOk(context: Context): Boolean {
-        val base = cfg(context, R.string.agenda_base_url)
-        val idClienta = cfg(context, R.string.agenda_id_clienta)
-        val apiKey = cfg(context, R.string.agenda_api_key)
-        return base.isNotEmpty() && idClienta.isNotEmpty() && !idClienta.startsWith("PON_AQUI") && !apiKey.startsWith("PON_AQUI")
-    }
+    /** null si config.xml está bien; si no, el motivo. */
+    fun errorConfig(context: Context): String? = validarConfigSync(
+        cfg(context, R.string.agenda_base_url), cfg(context, R.string.agenda_pais),
+        cfg(context, R.string.agenda_id_clienta), cfg(context, R.string.agenda_api_key)
+    )
 
     /** "25/12/2026" + "17:30" → "2026-12-25T17:30" */
     private fun fechaIso(cita: Cita): String? = try {
@@ -74,88 +60,138 @@ object SyncN8n {
         null
     }
 
-    /**
-     * accion = "guardar" (crear, editar o terminar) o "borrar".
-     * Devuelve true si n8n ha confirmado que la ha guardado.
-     */
-    suspend fun enviar(context: Context, cita: Cita, accion: String): Boolean {
-        val json = montarJson(context, cita, accion) ?: return false
-        return post(context, json.toString())
+    /** Datos de la cita que viajan a n8n (sin los de configuración, que se añaden al enviar). */
+    fun datosCita(cita: Cita): JSONObject = JSONObject().apply {
+        put("id_cita", cita.id)
+        put("cliente_nombre", cita.cliente)
+        put("cliente_telefono", cita.telefono)
+        put("cliente_email", cita.email)
+        put("fecha_hora", fechaIso(cita) ?: "")
+        put("terminada", cita.terminado)
+    }
+
+    // ── Cola y reintentos ──
+
+    /** Programa el envío de lo pendiente en segundo plano (en cuanto haya internet). */
+    fun solicitar(context: Context) {
+        val req = OneTimeWorkRequestBuilder<SyncWorker>()
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+            .build()
+        // APPEND_OR_REPLACE: si ya hay uno en marcha, este se ejecuta después (recoge lo que entre mientras);
+        // si el anterior falló por configuración, lo sustituye.
+        WorkManager.getInstance(context).enqueueUniqueWork("sync_n8n", ExistingWorkPolicy.APPEND_OR_REPLACE, req)
+    }
+
+    /** Procesa la cola ahora (lo usan el Worker y el bucle de la app). */
+    suspend fun procesar(context: Context): EstadoSync {
+        val db = AppDatabase.getDatabase(context)
+        importarColaAntigua(context, db)
+        val motor = MotorSync(ColaRoom(db), TransporteN8n(context, db), { errorConfig(context) })
+        val estado = motor.procesar()
+        if (estado != EstadoSync.AL_DIA) Log.w(TAG, "Sincronización: $estado · ${motor.ultimoMotivo}")
+        val bloqueadas = db.syncDao().contarBloqueadas()
+        if (bloqueadas > 0) Log.w(TAG, "$bloqueadas operaciones rechazadas por n8n quedan guardadas en la cola")
+        return estado
     }
 
     /**
-     * Borrar una cita: avisa a n8n para que la marque como cancelada y no mande recordatorio.
-     * Si n8n no responde, el aviso queda en cola y se reenvía solo más tarde.
+     * Versión anterior (parche 0002): los borrados pendientes se guardaban en SharedPreferences.
+     * Se pasan a la tabla (sin pisar una operación más nueva de la misma cita) y se vacía la lista antigua.
      */
-    suspend fun borrar(context: Context, cita: Cita) {
-        val json = montarJson(context, cita, "borrar") ?: return
-        if (!post(context, json.toString())) {
-            guardarBorrados(context, borradosPendientes(context).apply { add(json.toString()) })
-            programarReintento(context)
+    private suspend fun importarColaAntigua(context: Context, db: AppDatabase) {
+        val prefs = context.getSharedPreferences("sync_n8n", Context.MODE_PRIVATE)
+        val antiguos = prefs.getStringSet("borrados_pendientes", null) ?: return
+        if (antiguos.isEmpty()) { prefs.edit().remove("borrados_pendientes").apply(); return }
+        db.withTransaction {
+            for (texto in antiguos) {
+                val json = try { JSONObject(texto) } catch (e: Exception) { continue }
+                val id = json.optString("id_cita")
+                if (id.isEmpty()) continue
+                if (db.syncDao().deCita(id) != null) continue
+                // revisión 0 = sin control de versión (como la app antigua): el servidor la aplica siempre
+                db.syncDao().encolar(OperacionSync(id, UUID.randomUUID().toString(), TipoOp.BORRAR, 0,
+                    json.toString(), 0, null, false, System.currentTimeMillis()))
+            }
+        }
+        prefs.edit().remove("borrados_pendientes").apply()
+    }
+
+    /** La cola sobre Room: completar() es condicional y transaccional. */
+    private class ColaRoom(private val db: AppDatabase) : ColaSync {
+        override suspend fun pendientes() = db.syncDao().pendientes().map { it.aOp() }
+
+        override suspend fun completar(op: OpSync): Boolean = db.withTransaction {
+            val quitada = db.syncDao().borrarSiOp(op.idCita, op.opId) == 1
+            if (quitada && op.tipo == TipoOp.GUARDAR) {
+                val marcada = db.citaDao().marcarSincronizadaSiRevision(op.idCita, op.revision)
+                if (marcada == 0) Log.w(TAG, "La cita ${op.idCita} cambió durante el envío: queda pendiente")
+            }
+            quitada
+        }
+
+        override suspend fun descartar(op: OpSync) {
+            db.syncDao().borrarSiOp(op.idCita, op.opId)
+        }
+
+        override suspend fun registrarFallo(op: OpSync, motivo: String, bloquear: Boolean) {
+            db.syncDao().registrarFallo(op.idCita, op.opId, motivo.take(300), bloquear)
         }
     }
 
-    private fun montarJson(context: Context, cita: Cita, accion: String): JSONObject? {
-        if (!configOk(context)) {
-            Log.w(TAG, "Falta configurar config.xml: no se envía nada a n8n")
-            return null
+    /** Envío real a n8n. */
+    private class TransporteN8n(private val context: Context, private val db: AppDatabase) : TransporteSync {
+        override suspend fun enviar(op: OpSync): Envio {
+            val datos = when (op.tipo) {
+                TipoOp.GUARDAR -> {
+                    val cita = db.citaDao().obtenerPorId(op.idCita) ?: return Envio.SinDatos
+                    if (cita.revision != op.revision) return Envio.Obsoleta
+                    datosCita(cita)
+                }
+                else -> try { JSONObject(op.payload) } catch (e: Exception) { JSONObject().put("id_cita", op.idCita) }
+            }
+            datos.put("accion", op.tipo)
+            datos.put("id_cita", op.idCita)
+            datos.put("id_clienta", cfg(context, R.string.agenda_id_clienta))
+            datos.put("servicio", cfg(context, R.string.agenda_servicio))
+            datos.put("revision", op.revision)
+            datos.put("op_id", op.opId)
+            datos.put("protocolo", PROTOCOLO)
+            return Envio.Enviada(post(datos.toString()))
         }
-        val idClienta = cfg(context, R.string.agenda_id_clienta)
-        val fecha = fechaIso(cita) ?: return null
-        return JSONObject().apply {
-            put("accion", accion)
-            put("id_cita", cita.id)
-            put("id_clienta", idClienta)
-            put("cliente_nombre", cita.cliente)
-            put("cliente_telefono", cita.telefono)
-            put("cliente_email", cita.email)
-            put("servicio", cfg(context, R.string.agenda_servicio))
-            put("fecha_hora", fecha)
-            put("terminada", cita.terminado)
-        }
-    }
 
-    /** POST al webhook cita-sync. true si n8n contesta 2xx. */
-    private suspend fun post(context: Context, cuerpo: String): Boolean = withContext(Dispatchers.IO) {
-        val base = cfg(context, R.string.agenda_base_url).trimEnd('/')
-        val pais = cfg(context, R.string.agenda_pais).lowercase(Locale.ROOT)
-        val apiKey = cfg(context, R.string.agenda_api_key)
-        var con: HttpURLConnection? = null
-        try {
-            con = (URL("$base/webhook/$pais/agenda/cita-sync").openConnection() as HttpURLConnection).apply {
+        /** Lanza IOException si no hay conexión (el motor lo trata como fallo transitorio). */
+        private suspend fun post(cuerpo: String): RespuestaN8n = withContext(Dispatchers.IO) {
+            val base = cfg(context, R.string.agenda_base_url).trimEnd('/')
+            val pais = cfg(context, R.string.agenda_pais).lowercase(Locale.ROOT)
+            val con = (URL("$base/webhook/$pais/agenda/cita-sync").openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 connectTimeout = 10_000
-                readTimeout = 15_000
+                readTimeout = 20_000
                 doOutput = true
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
-                setRequestProperty("x-api-key", apiKey)
+                setRequestProperty("Accept", "application/json")
+                setRequestProperty("x-api-key", cfg(context, R.string.agenda_api_key))
             }
-            con.outputStream.use { it.write(cuerpo.toByteArray(Charsets.UTF_8)) }
-            val codigo = con.responseCode
-            if (codigo !in 200..299) Log.w(TAG, "n8n respondió $codigo")
-            codigo in 200..299
-        } catch (e: Exception) {
-            Log.w(TAG, "Sin conexión con n8n: ${e.message}")
-            false
-        } finally {
-            con?.disconnect()
+            try {
+                con.outputStream.use { it.write(cuerpo.toByteArray(Charsets.UTF_8)) }
+                val codigo = con.responseCode
+                val flujo = if (codigo in 200..299) con.inputStream else con.errorStream
+                val texto = flujo?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+                val j = try { JSONObject(texto) } catch (e: Exception) { null }
+                RespuestaN8n(
+                    codigoHttp = codigo,
+                    ok = if (j != null && j.has("ok")) j.optBoolean("ok") else null,
+                    idCita = j?.optString("id_cita")?.ifEmpty { null },
+                    opId = j?.optString("op_id")?.ifEmpty { null },
+                    revisionServidor = if (j != null && j.has("revision_servidor") && !j.isNull("revision_servidor"))
+                        j.optLong("revision_servidor") else null,
+                    error = j?.optString("error")?.ifEmpty { null }
+                )
+            } finally {
+                con.disconnect()
+            }
         }
-    }
-
-    /**
-     * Reintenta lo que no se pudo enviar (sin internet o con n8n caído): primero los borrados
-     * y luego las citas no sincronizadas. Devuelve true si ya no queda nada pendiente.
-     */
-    suspend fun reintentarPendientes(context: Context, dao: CitaDao): Boolean {
-        if (!configOk(context)) return true
-        val borrados = borradosPendientes(context)
-        val enviados = borrados.filter { post(context, it) }.toSet()
-        if (enviados.isNotEmpty()) guardarBorrados(context, borrados - enviados)
-        var todo = enviados.size == borrados.size
-        for (cita in dao.obtenerNoSincronizadas()) {
-            if (enviar(context, cita, "guardar")) dao.marcarSincronizada(cita.id) else todo = false
-        }
-        return todo
     }
 
     /**
@@ -168,7 +204,7 @@ object SyncN8n {
         val pais = cfg(context, R.string.agenda_pais).lowercase(Locale.ROOT)
         val idClienta = cfg(context, R.string.agenda_id_clienta)
         val apiKey = cfg(context, R.string.agenda_api_key)
-        if (base.isEmpty() || idClienta.startsWith("PON_AQUI") || apiKey.startsWith("PON_AQUI")) return@withContext emptyList()
+        if (errorConfig(context) != null) return@withContext emptyList()
 
         val canceladas = mutableListOf<Cita>()
         var con: HttpURLConnection? = null
@@ -257,10 +293,14 @@ object SyncN8n {
 
 // El precio por hora está ahora en Cobros.kt (se puede cambiar desde Ajustes en la app).
 
-/** Reintento en segundo plano: funciona con la app cerrada y espera a que haya internet. */
+/** Envía la cola en segundo plano: funciona con la app cerrada y espera a que haya internet. */
 class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
-    override suspend fun doWork(): Result {
-        val dao = AppDatabase.getDatabase(applicationContext).citaDao()
-        return if (SyncN8n.reintentarPendientes(applicationContext, dao)) Result.success() else Result.retry()
+    override suspend fun doWork(): Result = when (SyncN8n.procesar(applicationContext)) {
+        EstadoSync.AL_DIA -> Result.success()
+        // Queda algo pendiente (sin red, n8n caído, o entraron cambios mientras se enviaba): reintentar
+        EstadoSync.PENDIENTE -> Result.retry()
+        // config.xml incompleto o n8n rechaza la clave: reintentar no sirve. Las operaciones siguen
+        // guardadas y se enviarán cuando se corrija (al abrir la app o al guardar otra cita).
+        EstadoSync.ERROR_CONFIG -> Result.failure()
     }
 }

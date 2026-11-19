@@ -8,7 +8,7 @@ para que se guarde en la hoja `Citas` de su país y salgan los recordatorios a l
 | Archivo | Cambio |
 | --- | --- |
 | `res/values/config.xml` | **Nuevo.** Datos de esta clienta: país, id_clienta, api_key, URL de n8n, nombre del servicio y precio por hora. |
-| `SyncN8n.kt` | **Nuevo.** Envía las citas a `POST /webhook/{es|co}/agenda/cita-sync` y reintenta las que no se pudieron enviar. |
+| `SyncN8n.kt` / `MotorSync.kt` / `CitaRepo.kt` / `OperacionSync.kt` | Envían las citas a `POST /webhook/{es|co}/agenda/cita-sync` desde una cola persistente con revisiones (ver abajo). |
 | `Cita.kt` | Dos campos nuevos: `email` (del cliente) y `sincronizado`. |
 | `AppDataBase.kt` | Versión 7 con **migración 6→7**: añade las columnas **sin borrar las citas que ya existen**. |
 | `CitaDao.kt` | Consultas para las citas no sincronizadas. |
@@ -27,17 +27,31 @@ para que se guarde en la hoja `Citas` de su país y salgan los recordatorios a l
 2. **Correo**, si la cita tiene email.
 3. **WhatsApp**, cuando se active (de pago).
 
-## Cuándo se envía cada cosa
+## Cuándo se envía cada cosa (protocolo 2: cola + revisiones)
 
-| En la app | En la hoja `Citas` |
+Todo cambio pasa por `CitaRepo`: en **una sola transacción** de Room se guarda o borra la cita, se sube su
+`revision` y se deja la operación en la tabla `operaciones_sync`. Después la envía `SyncN8n` en segundo plano
+(WorkManager, también con la app cerrada y en cuanto haya internet).
+
+| En la app | En Supabase (`citas`) |
 | --- | --- |
-| Guardar una cita nueva | Fila nueva con estado `pendiente` |
-| Editar una cita | Se actualiza la misma fila (mismo `id_cita`). Si cambia la fecha u hora, se vuelve a programar el recordatorio |
+| Guardar una cita nueva | Fila nueva con estado `pendiente` y su revisión |
+| Editar una cita | Se actualiza la misma fila **solo si la revisión es mayor**. Si cambia la fecha u hora, se reprograma el recordatorio |
 | Terminar (✔️) | Estado `terminada`: ya no se manda recordatorio |
 | Borrar una cita sin terminar | Estado `cancelada`: no se manda recordatorio (la fila se conserva) |
-| Sin internet | Se queda pendiente en el móvil y se envía la próxima vez que se abra la app |
+| Borrar una cita terminada | Sigue `terminada` (es historial), pero queda registrado como último cambio |
+| Sin internet / n8n caído | La operación se queda en la cola del móvil y se envía sola cuando vuelve |
+| Editar varias veces sin conexión | Solo viaja la última versión (una operación por cita) |
+| Respuesta que llega tarde o repetida | Se ignora: Supabase nunca aplica una revisión menor o igual a la que ya tiene |
 
-> Borrar una cita sin internet no se reintenta. Si pasa, cámbiale el estado a `cancelada` a mano en la hoja.
+La app solo da una operación por hecha si n8n responde **`{ "ok": true, "id_cita": …, "revision_servidor": … }`**
+después de guardarla en Supabase. Si n8n responde 401 (clave incorrecta) o el `config.xml` está incompleto, deja de
+reintentar en bucle pero **no borra nada**: lo pendiente se envía cuando se corrige. Si n8n rechaza una operación
+por datos inválidos (400), esa operación queda guardada y marcada; se vuelve a enviar si la cita se edita.
+
+> ⚠️ Orden de despliegue: primero la migración de Supabase (`migracion_02_revision_citas.sql`), después la
+> sección D nueva del flujo 2 en n8n, y por último esta versión de la app. Con el flujo D antiguo, la app nueva
+> no recibe `{ok:true}` y se queda reintentando (sin perder nada) hasta que se actualice n8n.
 
 ## Para cada agenda nueva
 
