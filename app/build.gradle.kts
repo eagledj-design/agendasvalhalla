@@ -51,6 +51,9 @@ dependencies {
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler) // 🔥 Cambiado annotationProcessor por ksp
     
+    // 🔁 WorkManager: reenvía a n8n lo pendiente aunque la app esté cerrada
+    implementation(libs.androidx.work.runtime.ktx)
+
     // 🖼️ Coil para cargar imágenes
     implementation(libs.coil.compose)
 

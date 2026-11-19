@@ -133,14 +133,15 @@ fun AppAgendaPermanente() {
     // 🔄 Conexión con n8n: envía la cita en segundo plano (si no hay internet, se reintenta al abrir la app)
     fun sincronizar(cita: Cita, accion: String = "guardar") {
         coroutineScope.launch {
-            if (SyncN8n.enviar(context, cita, accion) && accion == "guardar") citaDao.marcarSincronizada(cita.id)
+            if (SyncN8n.enviar(context, cita, accion)) citaDao.marcarSincronizada(cita.id)
+            else SyncN8n.programarReintento(context) // sin internet o n8n caído: se reenvía solo más tarde
         }
     }
     fun borrarYSincronizar(cita: Cita) {
         coroutineScope.launch {
             citaDao.borrarCita(cita)
             // Solo avisamos a n8n si la cita no estaba terminada (así se cancela su recordatorio)
-            if (!cita.terminado) SyncN8n.enviar(context, cita, "borrar")
+            if (!cita.terminado) SyncN8n.borrar(context, cita) // si n8n no responde, queda en cola y se reintenta
         }
     }
     // Mientras la app está abierta: reenvía lo pendiente y mira qué han respondido los clientes (cada 15 min)

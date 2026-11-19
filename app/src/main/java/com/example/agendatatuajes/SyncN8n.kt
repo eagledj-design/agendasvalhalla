@@ -13,17 +13,57 @@ import java.net.URL
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Locale
+import java.util.concurrent.TimeUnit
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.CoroutineWorker
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
 
 /**
  * Envía las citas a n8n (webhook /webhook/{pais}/agenda/cita-sync) para que se guarden
  * en la hoja Citas y salgan los recordatorios a los clientes.
- * La agenda sigue funcionando igual sin internet: lo que no se pueda enviar se reintenta
- * la próxima vez que se abra la app.
+ * La agenda sigue funcionando igual sin internet ni n8n (apagón, PC apagado...):
+ *  - Citas creadas/editadas/terminadas: quedan marcadas como no sincronizadas en el móvil.
+ *  - Citas BORRADAS: como ya no existen en el móvil, su aviso se guarda en una cola aparte.
+ * En ambos casos se programa un reintento en segundo plano (WorkManager, con la app cerrada
+ * y en cuanto haya internet) y también se reintenta cada 15 min con la app abierta.
  */
 object SyncN8n {
     private const val TAG = "SyncN8n"
 
     private fun cfg(context: Context, id: Int): String = context.getString(id).trim()
+
+    private const val PREFS = "sync_n8n"
+    private const val KEY_BORRADOS = "borrados_pendientes"
+
+    /** Avisos de borrado que n8n aún no ha recibido (JSON ya montado, uno por cita). */
+    private fun borradosPendientes(context: Context): MutableSet<String> =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getStringSet(KEY_BORRADOS, emptySet())!!.toMutableSet()
+
+    private fun guardarBorrados(context: Context, set: Set<String>) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putStringSet(KEY_BORRADOS, set).apply()
+    }
+
+    /** Programa un reintento en segundo plano en cuanto haya conexión (si ya hay uno programado, no duplica). */
+    fun programarReintento(context: Context) {
+        val req = OneTimeWorkRequestBuilder<SyncWorker>()
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 2, TimeUnit.MINUTES)
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork("sync_n8n", ExistingWorkPolicy.KEEP, req)
+    }
+
+    /** Config lista para enviar a n8n (null si config.xml está sin rellenar). */
+    private fun configOk(context: Context): Boolean {
+        val base = cfg(context, R.string.agenda_base_url)
+        val idClienta = cfg(context, R.string.agenda_id_clienta)
+        val apiKey = cfg(context, R.string.agenda_api_key)
+        return base.isNotEmpty() && idClienta.isNotEmpty() && !idClienta.startsWith("PON_AQUI") && !apiKey.startsWith("PON_AQUI")
+    }
 
     /** "25/12/2026" + "17:30" → "2026-12-25T17:30" */
     private fun fechaIso(cita: Cita): String? = try {
@@ -38,18 +78,31 @@ object SyncN8n {
      * accion = "guardar" (crear, editar o terminar) o "borrar".
      * Devuelve true si n8n ha confirmado que la ha guardado.
      */
-    suspend fun enviar(context: Context, cita: Cita, accion: String): Boolean = withContext(Dispatchers.IO) {
-        val base = cfg(context, R.string.agenda_base_url).trimEnd('/')
-        val pais = cfg(context, R.string.agenda_pais).lowercase(Locale.ROOT)
-        val idClienta = cfg(context, R.string.agenda_id_clienta)
-        val apiKey = cfg(context, R.string.agenda_api_key)
-        if (base.isEmpty() || idClienta.isEmpty() || idClienta.startsWith("PON_AQUI") || apiKey.startsWith("PON_AQUI")) {
-            Log.w(TAG, "Falta configurar config.xml: no se envía nada a n8n")
-            return@withContext false
-        }
-        val fecha = fechaIso(cita) ?: return@withContext false
+    suspend fun enviar(context: Context, cita: Cita, accion: String): Boolean {
+        val json = montarJson(context, cita, accion) ?: return false
+        return post(context, json.toString())
+    }
 
-        val json = JSONObject().apply {
+    /**
+     * Borrar una cita: avisa a n8n para que la marque como cancelada y no mande recordatorio.
+     * Si n8n no responde, el aviso queda en cola y se reenvía solo más tarde.
+     */
+    suspend fun borrar(context: Context, cita: Cita) {
+        val json = montarJson(context, cita, "borrar") ?: return
+        if (!post(context, json.toString())) {
+            guardarBorrados(context, borradosPendientes(context).apply { add(json.toString()) })
+            programarReintento(context)
+        }
+    }
+
+    private fun montarJson(context: Context, cita: Cita, accion: String): JSONObject? {
+        if (!configOk(context)) {
+            Log.w(TAG, "Falta configurar config.xml: no se envía nada a n8n")
+            return null
+        }
+        val idClienta = cfg(context, R.string.agenda_id_clienta)
+        val fecha = fechaIso(cita) ?: return null
+        return JSONObject().apply {
             put("accion", accion)
             put("id_cita", cita.id)
             put("id_clienta", idClienta)
@@ -60,7 +113,13 @@ object SyncN8n {
             put("fecha_hora", fecha)
             put("terminada", cita.terminado)
         }
+    }
 
+    /** POST al webhook cita-sync. true si n8n contesta 2xx. */
+    private suspend fun post(context: Context, cuerpo: String): Boolean = withContext(Dispatchers.IO) {
+        val base = cfg(context, R.string.agenda_base_url).trimEnd('/')
+        val pais = cfg(context, R.string.agenda_pais).lowercase(Locale.ROOT)
+        val apiKey = cfg(context, R.string.agenda_api_key)
         var con: HttpURLConnection? = null
         try {
             con = (URL("$base/webhook/$pais/agenda/cita-sync").openConnection() as HttpURLConnection).apply {
@@ -71,7 +130,7 @@ object SyncN8n {
                 setRequestProperty("Content-Type", "application/json; charset=utf-8")
                 setRequestProperty("x-api-key", apiKey)
             }
-            con.outputStream.use { it.write(json.toString().toByteArray(Charsets.UTF_8)) }
+            con.outputStream.use { it.write(cuerpo.toByteArray(Charsets.UTF_8)) }
             val codigo = con.responseCode
             if (codigo !in 200..299) Log.w(TAG, "n8n respondió $codigo")
             codigo in 200..299
@@ -83,11 +142,20 @@ object SyncN8n {
         }
     }
 
-    /** Reintenta las citas que no se pudieron enviar (por ejemplo, porque no había internet). */
-    suspend fun reintentarPendientes(context: Context, dao: CitaDao) {
+    /**
+     * Reintenta lo que no se pudo enviar (sin internet o con n8n caído): primero los borrados
+     * y luego las citas no sincronizadas. Devuelve true si ya no queda nada pendiente.
+     */
+    suspend fun reintentarPendientes(context: Context, dao: CitaDao): Boolean {
+        if (!configOk(context)) return true
+        val borrados = borradosPendientes(context)
+        val enviados = borrados.filter { post(context, it) }.toSet()
+        if (enviados.isNotEmpty()) guardarBorrados(context, borrados - enviados)
+        var todo = enviados.size == borrados.size
         for (cita in dao.obtenerNoSincronizadas()) {
-            if (enviar(context, cita, "guardar")) dao.marcarSincronizada(cita.id)
+            if (enviar(context, cita, "guardar")) dao.marcarSincronizada(cita.id) else todo = false
         }
+        return todo
     }
 
     /**
@@ -188,3 +256,11 @@ object SyncN8n {
 }
 
 // El precio por hora está ahora en Cobros.kt (se puede cambiar desde Ajustes en la app).
+
+/** Reintento en segundo plano: funciona con la app cerrada y espera a que haya internet. */
+class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result {
+        val dao = AppDatabase.getDatabase(applicationContext).citaDao()
+        return if (SyncN8n.reintentarPendientes(applicationContext, dao)) Result.success() else Result.retry()
+    }
+}
