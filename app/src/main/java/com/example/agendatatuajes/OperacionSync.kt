@@ -55,6 +55,10 @@ interface SyncDao {
     @Query("UPDATE operaciones_sync SET intentos = intentos + 1, ultimoError = :error, bloqueada = :bloquear WHERE idCita = :idCita AND opId = :opId")
     suspend fun registrarFallo(idCita: String, opId: String, error: String, bloquear: Boolean): Int
 
+    /** Al abrir la app: vuelve a intentar las rechazadas que llevan menos de :max intentos (p. ej. si se corrigió el servidor). */
+    @Query("UPDATE operaciones_sync SET bloqueada = 0 WHERE bloqueada = 1 AND intentos < :max")
+    suspend fun reintentarBloqueadas(max: Int): Int
+
     @Query("SELECT COUNT(*) FROM operaciones_sync")
     suspend fun contar(): Int
 

@@ -16,6 +16,7 @@ PASA  · Consulta deCita encontrada en el código
 PASA  · Consulta borrarSiOp encontrada en el código
 PASA  · Consulta registrarFallo encontrada en el código
 PASA  · Consulta contarBloqueadas encontrada en el código
+PASA  · Consulta reintentarBloqueadas encontrada en el código
 PASA  · Completar la operación vigente la quita y marca la cita
 PASA  · …y la cita queda sincronizada
 PASA  · Editar durante el envío sustituye la operación (una sola por cita)
@@ -26,5 +27,7 @@ PASA  · Si algo falla a mitad del borrado, no queda nada a medias (rollback)
 PASA  · Borrar: la cita desaparece y queda UNA operación 'borrar' que sustituye al guardado pendiente
 PASA  · Una operación bloqueada no sale en pendientes() pero sigue guardada
 PASA  · registrarFallo con un opId antiguo no toca la operación vigente
+PASA  · reintentarBloqueadas desbloquea la operación rechazada (1 intento < 5)
+PASA  · …pero no la que ya lleva 5 intentos (no reintenta para siempre)
 
-RESULTADO Room/SQLite (SQLite 3.53.1): 28/28 pruebas pasan
+RESULTADO Room/SQLite (SQLite 3.53.1): 31/31 pruebas pasan

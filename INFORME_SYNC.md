@@ -117,3 +117,28 @@ Si la app nueva se instala antes de actualizar n8n, no se pierde nada: el flujo 
 - **`fallbackToDestructiveMigration()`** sigue activo. Solo actúa si falta una migración, por ejemplo al instalar sobre una versión 5 o anterior, pero en ese caso **borra los datos**. Recomendación: quitarlo y añadir las migraciones que falten.
 - **Cancelaciones del cliente:** si el cliente cancela por Telegram (flujo C) y la profesional edita después la cita sin cambiar la fecha, vuelve a `pendiente`. Es el comportamiento que ya existía; aquí se ha mantenido igual.
 - **Cita recreada con el mismo id:** si se volviera a crear una cita con el mismo id después de que su borrado ya se hubiera enviado, empezaría en revisión 1 y el servidor la ignoraría. No ocurre con el uso normal, porque los ids son UUID nuevos.
+
+## Corrección posterior (prueba real en el móvil, 19/11)
+
+En la prueba real (crear, editar sin conexión y borrar) n8n rechazó el borrado con
+`400 campo_obligatorio: fecha_hora`. La causa era **un fallo antiguo del formulario**, no de la sincronización:
+
+- **El fallo:** al **editar** una cita, la fecha se cargaba con barras (`22/11/2026`). Si no se tocaba ese campo, al guardar se troceaba como si fueran 8 dígitos y quedaba `22//1/1/2026`; con la hora pasaba igual (`18::00`). Esa fecha rota también impedía programar las alarmas.
+- **La consecuencia en la cola:** el borrado de esa cita se quedó **bloqueado para siempre**. Como la cita ya no existe en el móvil, no se podía editar para desbloquearlo.
+
+Correcciones:
+1. **Formulario.** `FechasCita.kt` (`soloDigitos` y `fechaHoraDeFormulario`): el formulario guarda la fecha y la hora solo en dígitos y comprueba que existen (calendario estricto) antes de guardar; si no, avisa. 6 pruebas nuevas.
+2. **Servidor: borrar sin fecha.**
+   - **Supabase:** la migración `migracion_03_borrar_sin_fecha.sql` hace que `sync_cita` cancele la cita existente solo con el id (misma clienta, revisión mayor). Si el servidor nunca tuvo la cita, responde `sin_cita` sin crear nada. Guardar sin fecha sigue siendo un error.
+   - **n8n:** `Validar sync` acepta borrados sin fecha o con la fecha rota, y `Resultado sync` confirma `sin_cita` con la revisión enviada.
+3. **Operaciones bloqueadas.** Se reintentan **al abrir la app** (`SyncDao.reintentarBloqueadas`), hasta 5 intentos en total. Así se recuperan solas cuando se corrige la causa, sin reintentar en bucle.
+
+Resultados tras la corrección:
+
+| Suite | Resultado |
+|---|---|
+| Motor + fechas (Kotlin) | **25/25** |
+| Room/SQLite | **31/31** |
+| PostgreSQL (migraciones 02 + 03, con concurrencia) | **30/30** |
+| Nodos n8n | **26/26** en ES y en CO |
+| Comprobación de tipos | 0 errores |

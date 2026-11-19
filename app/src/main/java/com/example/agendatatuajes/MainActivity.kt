@@ -137,6 +137,7 @@ fun AppAgendaPermanente() {
     }
     // Mientras la app está abierta: envía lo pendiente y mira qué han respondido los clientes (cada 15 min)
     LaunchedEffect(Unit) {
+        SyncN8n.reintentarBloqueadas(context) // las rechazadas se reintentan al abrir la app (máx. 5 intentos)
         SyncN8n.solicitar(context) // al abrir la app, por si quedó algo de la última vez
         while (true) {
             SyncN8n.procesar(context)
@@ -354,8 +355,9 @@ fun FormularioCita(cita: Cita?, onSave: (Cita) -> Unit) {
     var cliente by remember { mutableStateOf(cita?.cliente ?: "") }
     var tel by remember { mutableStateOf(cita?.telefono ?: "") }
     var email by remember { mutableStateOf(cita?.email ?: "") }
-    var fecha by remember { mutableStateOf(cita?.fecha ?: "") }
-    var hora by remember { mutableStateOf(cita?.hora ?: "") }
+    // Solo dígitos (DDMMYYYY / HHMM): así, al editar sin tocar la fecha, no se rompe al guardar
+    var fecha by remember { mutableStateOf(soloDigitos(cita?.fecha ?: "")) }
+    var hora by remember { mutableStateOf(soloDigitos(cita?.hora ?: "")) }
     var direccion by remember { mutableStateOf(cita?.direccion ?: "") }
     var horas by remember { mutableStateOf(cita?.horas ?: "") }
     var abonado by remember { mutableStateOf(cita?.abonado ?: "") }
@@ -373,8 +375,8 @@ fun FormularioCita(cita: Cita?, onSave: (Cita) -> Unit) {
         OutlinedTextField(cliente, { cliente = it }, label = { Text("Cliente") }, modifier = Modifier.fillMaxWidth(), colors = colors)
         OutlinedTextField(tel, { tel = it }, label = { Text("Teléfono") }, modifier = Modifier.fillMaxWidth(), colors = colors, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone))
         OutlinedTextField(email, { email = it.trim() }, label = { Text("Email del cliente (para recordatorios)") }, modifier = Modifier.fillMaxWidth(), colors = colors, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email))
-        OutlinedTextField(fecha.replace("/", ""), { if(it.length<=8) fecha=it }, label = { Text("Fecha (DDMMYYYY)") }, modifier = Modifier.fillMaxWidth(), colors = colors, visualTransformation = DateVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-        OutlinedTextField(hora.replace(":", ""), { if(it.length<=4) hora=it }, label = { Text("Hora (HHMM)") }, modifier = Modifier.fillMaxWidth(), colors = colors, visualTransformation = TimeVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+        OutlinedTextField(fecha, { val d = soloDigitos(it); if(d.length<=8) fecha=d }, label = { Text("Fecha (DDMMYYYY)") }, modifier = Modifier.fillMaxWidth(), colors = colors, visualTransformation = DateVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+        OutlinedTextField(hora, { val d = soloDigitos(it); if(d.length<=4) hora=d }, label = { Text("Hora (HHMM)") }, modifier = Modifier.fillMaxWidth(), colors = colors, visualTransformation = TimeVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
         OutlinedTextField(direccion, { direccion = it }, label = { Text("Dirección") }, modifier = Modifier.fillMaxWidth(), colors = colors)
         if (!fijo) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -421,9 +423,12 @@ fun FormularioCita(cita: Cita?, onSave: (Cita) -> Unit) {
         
         OutlinedTextField(notas, { notas = it }, label = { Text("Notas") }, modifier = Modifier.fillMaxWidth(), colors = colors, minLines = 3)
         Button(onClick = { 
-            if(cliente.isNotEmpty() && fecha.length>=8 && hora.length>=4) {
-                val f = "${fecha.substring(0,2)}/${fecha.substring(2,4)}/${fecha.substring(4)}"
-                val h = "${hora.substring(0,2)}:${hora.substring(2)}"
+            val fechaHora = fechaHoraDeFormulario(fecha, hora)
+            if (cliente.isNotEmpty() && fechaHora == null) {
+                Toast.makeText(ctx, "Revisa la fecha (DDMMYYYY) y la hora (HHMM)", Toast.LENGTH_SHORT).show()
+            }
+            if(cliente.isNotEmpty() && fechaHora != null) {
+                val (f, h) = fechaHora
                 onSave(Cita(cita?.id ?: UUID.randomUUID().toString(), cliente, tel, f, h, direccion, horas.replace(',', '.'), notas, cita?.terminado?:false, guardarNum(num(abonado) ?: 0.0), guardarNum(pendiente), cita?.fotoPath, recordatorio, email = email, sincronizado = false, estadoCliente = cita?.estadoCliente ?: "", tarifaHora = if (fijo) "" else guardarNum(num(tarifa) ?: precioHora(ctx)), totalFijo = if (fijo) guardarNum(total) else "", fechaCobro = cita?.fechaCobro ?: ""))
             }
         }, Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Color.Red)) { Text("GUARDAR") }

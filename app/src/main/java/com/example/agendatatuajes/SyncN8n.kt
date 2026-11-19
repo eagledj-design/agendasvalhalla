@@ -83,6 +83,17 @@ object SyncN8n {
         WorkManager.getInstance(context).enqueueUniqueWork("sync_n8n", ExistingWorkPolicy.APPEND_OR_REPLACE, req)
     }
 
+    /**
+     * Al abrir la app, las operaciones que n8n rechazó (bloqueadas) se vuelven a intentar, hasta 5 intentos en total.
+     * Así no se quedan atascadas para siempre si el rechazo se debía a algo que ya se ha corregido
+     * (por ejemplo, un borrado de una cita que ya no existe en el móvil y no se puede volver a editar).
+     */
+    suspend fun reintentarBloqueadas(context: Context) {
+        val n = AppDatabase.getDatabase(context).syncDao().reintentarBloqueadas(MAX_INTENTOS_BLOQUEADAS)
+        if (n > 0) Log.w(TAG, "Se vuelven a intentar $n operaciones rechazadas")
+    }
+    private const val MAX_INTENTOS_BLOQUEADAS = 5
+
     /** Procesa la cola ahora (lo usan el Worker y el bucle de la app). */
     suspend fun procesar(context: Context): EstadoSync {
         val db = AppDatabase.getDatabase(context)

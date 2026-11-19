@@ -112,7 +112,7 @@ caso("Cada operación migrada tiene un opId único", len(set(ids)) == len(ids) a
 
 # ---------- consultas reales de los DAO ----------
 Q = {**consultas(leer("CitaDao.kt")), **consultas(leer("OperacionSync.kt"))}
-for n in ["revisionDe", "marcarSincronizadaSiRevision", "pendientes", "deCita", "borrarSiOp", "registrarFallo", "contarBloqueadas"]:
+for n in ["revisionDe", "marcarSincronizadaSiRevision", "pendientes", "deCita", "borrarSiOp", "registrarFallo", "contarBloqueadas", "reintentarBloqueadas"]:
     caso(f"Consulta {n} encontrada en el código", n in Q)
 
 
@@ -180,6 +180,15 @@ caso("Una operación bloqueada no sale en pendientes() pero sigue guardada",
      and ejecutar(con, Q["contarBloqueadas"]).fetchone()[0] == 1)
 caso("registrarFallo con un opId antiguo no toca la operación vigente",
      ejecutar(con, Q["registrarFallo"], idCita="a3", opId="viejo", error="x", bloquear=0).rowcount == 0)
+
+# al abrir la app se reintentan las bloqueadas con menos de 5 intentos
+caso("reintentarBloqueadas desbloquea la operación rechazada (1 intento < 5)",
+     ejecutar(con, Q["reintentarBloqueadas"], max=5).rowcount == 1
+     and any(r[0] == "a3" for r in ejecutar(con, Q["pendientes"]).fetchall()))
+con.execute("UPDATE operaciones_sync SET bloqueada = 1, intentos = 5 WHERE idCita = 'a3'")
+caso("…pero no la que ya lleva 5 intentos (no reintenta para siempre)",
+     ejecutar(con, Q["reintentarBloqueadas"], max=5).rowcount == 0
+     and ejecutar(con, Q["contarBloqueadas"]).fetchone()[0] == 1)
 
 ok = sum(resultados)
 print(f"\nRESULTADO Room/SQLite (SQLite {sqlite3.sqlite_version}): {ok}/{len(resultados)} pruebas pasan")
