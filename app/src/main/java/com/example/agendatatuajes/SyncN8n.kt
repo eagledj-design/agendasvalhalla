@@ -6,8 +6,6 @@ import android.net.Uri
 import android.util.Log
 import android.widget.Toast
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -38,15 +36,6 @@ object SyncN8n {
     private const val TAG = "SyncN8n"
 
     private fun cfg(context: Context, id: Int): String = context.getString(id).trim()
-
-    /** Un solo envío a la vez y en orden: así n8n nunca recibe una versión vieja después de la nueva. */
-    private val envio = Mutex()
-
-    /** Marca la cita como sincronizada solo si no ha cambiado desde que se envió. */
-    suspend fun marcarSiNoCambio(dao: CitaDao, enviada: Cita) {
-        dao.marcarSincronizadaSiNoCambio(enviada.id, enviada.cliente, enviada.telefono, enviada.email,
-            enviada.fecha, enviada.hora, enviada.terminado)
-    }
 
     private const val PREFS = "sync_n8n"
     private const val KEY_BORRADOS = "borrados_pendientes"
@@ -127,9 +116,7 @@ object SyncN8n {
     }
 
     /** POST al webhook cita-sync. true si n8n contesta 2xx. */
-    private suspend fun post(context: Context, cuerpo: String): Boolean = envio.withLock { postSinCola(context, cuerpo) }
-
-    private suspend fun postSinCola(context: Context, cuerpo: String): Boolean = withContext(Dispatchers.IO) {
+    private suspend fun post(context: Context, cuerpo: String): Boolean = withContext(Dispatchers.IO) {
         val base = cfg(context, R.string.agenda_base_url).trimEnd('/')
         val pais = cfg(context, R.string.agenda_pais).lowercase(Locale.ROOT)
         val apiKey = cfg(context, R.string.agenda_api_key)
@@ -166,7 +153,7 @@ object SyncN8n {
         if (enviados.isNotEmpty()) guardarBorrados(context, borrados - enviados)
         var todo = enviados.size == borrados.size
         for (cita in dao.obtenerNoSincronizadas()) {
-            if (enviar(context, cita, "guardar")) marcarSiNoCambio(dao, cita) else todo = false
+            if (enviar(context, cita, "guardar")) dao.marcarSincronizada(cita.id) else todo = false
         }
         return todo
     }
