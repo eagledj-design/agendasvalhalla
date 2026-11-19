@@ -13,3 +13,7 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Agendas de clientas (privadas, llevan api_key): nunca dentro del repo
+/AgendasClientas/
+__pycache__/

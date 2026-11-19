@@ -1,8 +1,50 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 👩‍🎨 Una variante de la app por clienta (Build Variants en Android Studio)
+//
+// Cada carpeta de ../AgendasClientas (fuera de GitHub) con un clienta.properties es una clienta:
+//   AgendasClientas/es0001_unas_gissel/clienta.properties   → applicationId=com.agendasvalhalla.es0001
+//   AgendasClientas/es0001_unas_gissel/res/...              → su config.xml, nombre, marco, fondo, icono
+// Lo que hay en su res/ SUSTITUYE a lo de app/src/main/res; lo que no está, se usa el de la base.
+// La variante se llama como el código (es0001). La variante "base" es la agenda sin clienta.
+// Otra ruta: en local.properties →  agendas.clientas.dir=/ruta/a/AgendasClientas
+// Para crear una clienta: python3 herramientas/nueva_clienta.py (ver herramientas/CLIENTAS.md)
+// ─────────────────────────────────────────────────────────────────────────────
+val dirClientas: File = run {
+    val local = Properties()
+    rootProject.file("local.properties").takeIf { it.exists() }?.reader(Charsets.UTF_8)?.use { local.load(it) }
+    rootProject.file(local.getProperty("agendas.clientas.dir") ?: "../AgendasClientas")
+}
+
+data class Clienta(val variante: String, val carpeta: File, val applicationId: String)
+
+val clientas: List<Clienta> = (dirClientas.listFiles() ?: emptyArray())
+    .filter { it.isDirectory && File(it, "clienta.properties").isFile }
+    .sortedBy { it.name }
+    .map { carpeta ->
+        val p = Properties()
+        File(carpeta, "clienta.properties").reader(Charsets.UTF_8).use { p.load(it) }
+        val variante = carpeta.name.substringBefore("_").lowercase()
+        require(Regex("^(es|co)\\d{4}$").matches(variante)) {
+            "La carpeta ${carpeta.name} debe empezar por el código de la clienta (es0001_..., co0001_...)"
+        }
+        val appId = p.getProperty("applicationId")?.trim().orEmpty()
+        require(Regex("^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$").matches(appId)) {
+            "${carpeta.name}/clienta.properties: applicationId no válido ('$appId')"
+        }
+        Clienta(variante, carpeta, appId)
+    }
+    .also { lista ->
+        val repetidos = lista.groupBy { it.applicationId }.filterValues { it.size > 1 }.keys
+        require(repetidos.isEmpty()) { "Dos clientas comparten applicationId: $repetidos (se pisarían en el móvil)" }
+    }
 
 android {
     namespace = "com.example.agendatatuajes"
@@ -16,6 +58,22 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    flavorDimensions += "clienta"
+    productFlavors {
+        create("base") {
+            dimension = "clienta"   // la agenda base, con el config.xml de app/src/main (PON_AQUI_...)
+        }
+        clientas.forEach { c ->
+            create(c.variante) {
+                dimension = "clienta"
+                applicationId = c.applicationId
+            }
+        }
+    }
+    sourceSets {
+        clientas.forEach { c -> getByName(c.variante).res.srcDir(File(c.carpeta, "res")) }
     }
 
     buildTypes {
