@@ -87,13 +87,13 @@ fun PantallaGanancias(
             // ── Resumen del mes ──
             Card(Modifier.fillMaxWidth().padding(vertical = 12.dp), colors = CardDefaults.cardColors(containerColor = FONDO_TARJETA)) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    FilaResumen("💰 Cobrado", "${mostrarNum(cobrado)} €", Color.White)
-                    FilaResumen("🧾 Gastos", "− ${mostrarNum(gastado)} €", ROJO)
+                    FilaResumen("💰 Cobrado", dinero(cobrado), Color.White)
+                    FilaResumen("🧾 Gastos", "− ${dinero(gastado)}", ROJO)
                     HorizontalDivider(color = Color.DarkGray)
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Text("BENEFICIO", color = Color.Gray, style = MaterialTheme.typography.titleMedium)
                         Text(
-                            (if (beneficio < 0) "− " else "") + "${mostrarNum(kotlin.math.abs(beneficio))} €",
+                            dinero(beneficio),
                             color = if (beneficio < 0) ROJO else VERDE,
                             style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold
                         )
@@ -121,7 +121,7 @@ fun PantallaGanancias(
                                             Text("Cobrada el ${cita.fechaCobro}" + if (cita.fechaCobro != cita.fecha) " · cita del ${cita.fecha}" else "",
                                                 color = Color.Gray, style = MaterialTheme.typography.bodySmall)
                                         }
-                                        Text("+ ${mostrarNum(num(cita.abonado) ?: 0.0)} €", color = VERDE, style = MaterialTheme.typography.titleMedium)
+                                        Text("+ ${dinero(num(cita.abonado) ?: 0.0)}", color = VERDE, style = MaterialTheme.typography.titleMedium)
                                     }
                                 }
                             }
@@ -139,7 +139,7 @@ fun PantallaGanancias(
                                             Text(gasto.concepto, color = Color.White, style = MaterialTheme.typography.titleMedium)
                                             Text("${gasto.fecha} · ${gasto.categoria}", color = Color.Gray, style = MaterialTheme.typography.bodySmall)
                                         }
-                                        Text("− ${mostrarNum(num(gasto.importe) ?: 0.0)} €", color = ROJO, style = MaterialTheme.typography.titleMedium)
+                                        Text("− ${dinero(num(gasto.importe) ?: 0.0)}", color = ROJO, style = MaterialTheme.typography.titleMedium)
                                         IconButton(onClick = { gastoABorrar = gasto }) { Icon(Icons.Default.Delete, "Borrar gasto", tint = Color.DarkGray) }
                                     }
                                 }
@@ -169,17 +169,17 @@ fun PantallaGanancias(
                     val texto = buildString {
                         appendLine("Resumen del mes $mesSeleccionado")
                         appendLine()
-                        appendLine("Cobrado: ${mostrarNum(cobrado)} €")
-                        appendLine("Gastos: ${mostrarNum(gastado)} €")
-                        appendLine("Beneficio: ${mostrarNum(beneficio)} €")
+                        appendLine("Cobrado: ${dinero(cobrado)}")
+                        appendLine("Gastos: ${dinero(gastado)}")
+                        appendLine("Beneficio: ${dinero(beneficio)}")
                         appendLine()
                         appendLine("INGRESOS")
                         if (ingresosMes.isEmpty()) appendLine("- (ninguno)")
-                        ingresosMes.forEach { appendLine("- ${it.fechaCobro}: ${it.cliente} → ${mostrarNum(num(it.abonado) ?: 0.0)} €") }
+                        ingresosMes.forEach { appendLine("- ${it.fechaCobro}: ${it.cliente} → ${dinero(num(it.abonado) ?: 0.0)}") }
                         appendLine()
                         appendLine("GASTOS")
                         if (gastosMes.isEmpty()) appendLine("- (ninguno)")
-                        gastosMes.forEach { appendLine("- ${it.fecha}: ${it.concepto} (${it.categoria}) → ${mostrarNum(num(it.importe) ?: 0.0)} €") }
+                        gastosMes.forEach { appendLine("- ${it.fecha}: ${it.concepto} (${it.categoria}) → ${dinero(num(it.importe) ?: 0.0)}") }
                         appendLine()
                         append("Control orientativo, no es contabilidad oficial (no incluye IVA ni impuestos).")
                     }
@@ -208,7 +208,7 @@ fun PantallaGanancias(
             onDismissRequest = { gastoABorrar = null },
             containerColor = FONDO_TARJETA,
             title = { Text("¿Borrar gasto?", color = Color.White) },
-            text = { Text("${g.concepto} · ${mostrarNum(num(g.importe) ?: 0.0)} €", color = Color.Gray) },
+            text = { Text("${g.concepto} · ${dinero(num(g.importe) ?: 0.0)}", color = Color.Gray) },
             confirmButton = { Button(onClick = { onBorrarGasto(g); gastoABorrar = null }, colors = ButtonDefaults.buttonColors(containerColor = ROJO)) { Text("Borrar") } },
             dismissButton = { TextButton(onClick = { gastoABorrar = null }) { Text("Cancelar", color = Color.White) } }
         )
@@ -245,7 +245,7 @@ fun DialogoGasto(gasto: Gasto?, onDismiss: () -> Unit, onGuardar: (Gasto) -> Uni
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(concepto, { concepto = it }, label = { Text("Concepto (tintas, esmaltes...)") }, singleLine = true, colors = colores, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(importe, { importe = it }, label = { Text("Importe €") }, singleLine = true, isError = importe.isNotEmpty() && !importeOk,
+                OutlinedTextField(importe, { importe = it }, label = { Text(conMoneda("Importe")) }, singleLine = true, isError = importe.isNotEmpty() && !importeOk,
                     colors = colores, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(fecha, { if (it.length <= 8) fecha = it }, label = { Text("Fecha (DDMMYYYY)") }, singleLine = true, isError = fecha.length == 8 && !fechaOk,
                     colors = colores, visualTransformation = DateVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())

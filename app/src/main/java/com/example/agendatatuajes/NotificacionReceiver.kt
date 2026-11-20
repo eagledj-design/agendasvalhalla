@@ -2,6 +2,7 @@ package com.example.agendatatuajes
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -13,7 +14,8 @@ class NotificacionReceiver : BroadcastReceiver() {
         val cliente = intent.getStringExtra("CLIENTE") ?: "Cliente"
         val hora = intent.getStringExtra("HORA") ?: ""
         val tiempoRestante = intent.getStringExtra("TIEMPO_RESTANTE") ?: "unas horas"
-        val infoLimpieza = "¡Recordatorio! Tienes una limpieza con $cliente en $tiempoRestante (a las $hora)"
+        val servicio = context.getString(R.string.agenda_servicio).trim().lowercase()
+        val texto = "Tienes ${if (servicio.isNotEmpty()) "$servicio con " else "cita con "}$cliente en $tiempoRestante (a las $hora)"
 
         val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val channelId = "citas_tatuajes_channel"
@@ -22,7 +24,7 @@ class NotificacionReceiver : BroadcastReceiver() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 channelId,
-                "Recordatorios de Limpieza",
+                "Avisos de citas",
                 NotificationManager.IMPORTANCE_HIGH
             )
             notificationManager.createNotificationChannel(channel)
@@ -31,10 +33,18 @@ class NotificacionReceiver : BroadcastReceiver() {
         // Construimos la alerta visual en el teléfono
         val notification = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm) // Icono nativo de alarma
-            .setContentTitle("Agenda 111Clean - ¡Cita de Limpieza!")
-            .setContentText(infoLimpieza)
+            .setContentTitle("⏰ ${context.getString(R.string.app_name)}")
+            .setContentText(texto)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(texto))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
+            .setContentIntent( // al tocar el aviso se abre la agenda
+                PendingIntent.getActivity(
+                    context, 0,
+                    Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            )
             .build()
 
         // Lanzamos la notificación en pantalla usando un ID único basado en el tiempo

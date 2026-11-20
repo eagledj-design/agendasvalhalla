@@ -1,10 +1,8 @@
 package com.example.agendatatuajes
 
 import android.Manifest
-import android.app.AlarmManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -17,7 +15,6 @@ import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -87,6 +84,7 @@ private val GothicDarkColors = darkColorScheme(
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Moneda.fijar(getString(R.string.agenda_pais)) // € en España, $ (COP) en Colombia
         crearCanalNotificacion(this)
         setContent {
             MaterialTheme(colorScheme = GothicDarkColors) {
@@ -102,7 +100,7 @@ private fun crearCanalNotificacion(context: Context) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
         val channelId = "citas_tatuajes_channel"
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val canal = NotificationChannel(channelId, "Recordatorios de Limpieza", NotificationManager.IMPORTANCE_HIGH)
+        val canal = NotificationChannel(channelId, "Avisos de citas", NotificationManager.IMPORTANCE_HIGH)
         manager.createNotificationChannel(canal)
     }
 }
@@ -135,6 +133,18 @@ fun AppAgendaPermanente() {
     fun borrarYSincronizar(cita: Cita) {
         coroutineScope.launch { CitaRepo.borrar(context, cita) }
     }
+    // Android 13 o más nuevo: sin este permiso los avisos de las citas no se ven (antes nunca se pedía)
+    val launcherPermisoNotificaciones = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { concedido ->
+        if (!concedido) Toast.makeText(context, "Sin permiso de notificaciones no podré avisarte de tus citas", Toast.LENGTH_LONG).show()
+    }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            launcherPermisoNotificaciones.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        reprogramarTodas(context) // por si el móvil se reinició o el sistema borró las alarmas
+    }
+
     // Mientras la app está abierta: envía lo pendiente y mira qué han respondido los clientes (cada 15 min)
     LaunchedEffect(Unit) {
         SyncN8n.reintentarBloqueadas(context) // las rechazadas se reintentan al abrir la app (máx. 5 intentos)
@@ -142,6 +152,7 @@ fun AppAgendaPermanente() {
         while (true) {
             SyncN8n.procesar(context)
             for (c in SyncN8n.consultarEstados(context, citaDao)) {
+                cancelarAlarma(context, c) // el cliente ha cancelado: ya no hace falta avisar
                 Toast.makeText(context, "❌ ${c.cliente} ha cancelado su cita del ${c.fecha} a las ${c.hora}", Toast.LENGTH_LONG).show()
             }
             kotlinx.coroutines.delay(15 * 60 * 1000L)
@@ -203,7 +214,15 @@ fun AppAgendaPermanente() {
                 1 -> FormularioCita(citaAEditar) { coroutineScope.launch { val c = CitaRepo.guardar(context, it.conFechaCobro()); if(!c.terminado) programarAlarmaLocal(context, c); modoApp = 0; citaAEditar = null } }
                 2 -> PantallaListaCitas(listaTerminadas, { modoApp = 1 }, { borrarYSincronizar(it) }, { citaAEditar = it; modoApp = 1 }, {}, { intentarAbrirCamara(it) }, true)
                 3 -> PantallaListaCitas(listaCobrosPendientes, { modoApp = 1 }, { borrarYSincronizar(it) }, { citaAEditar = it; modoApp = 1 }, {}, { intentarAbrirCamara(it) }, true, onCobrar = { citaACobrar = it })
-                4 -> PantallaGaleria(listaGaleria) { borrarYSincronizar(it) }
+                4 -> PantallaGaleria(listaGaleria) { cita ->
+                    coroutineScope.launch {
+                        // Solo se quita la foto: la cita y sus cobros se quedan (antes se borraba la cita entera)
+                        val actual = citaDao.obtenerPorId(cita.id) ?: cita
+                        borrarArchivoFoto(context, actual.fotoPath)
+                        CitaRepo.guardar(context, actual.copy(fotoPath = null))
+                        Toast.makeText(context, "Foto quitada", Toast.LENGTH_SHORT).show()
+                    }
+                }
                 6 -> PantallaGanancias(
                     citas = listaGanancias,
                     gastos = listaGastos,
@@ -265,6 +284,16 @@ fun AppAgendaPermanente() {
 
 @Composable
 fun PantallaListaCitas(citas: List<Cita>, onAdd: () -> Unit, onDel: (Cita) -> Unit, onEdit: (Cita) -> Unit, onFinish: (Cita) -> Unit, onPhoto: (Cita) -> Unit, esHistorico: Boolean, onCobrar: ((Cita) -> Unit)? = null) {
+    var citaABorrar by remember { mutableStateOf<Cita?>(null) }
+    citaABorrar?.let { c ->
+        DialogoConfirmar(
+            titulo = "¿Borrar la cita de ${c.cliente}?",
+            texto = "Se borra del todo (también sus cobros y su foto) y no se puede deshacer.",
+            boton = "Borrar",
+            onConfirmar = { citaABorrar = null; onDel(c) },
+            onCancelar = { citaABorrar = null }
+        )
+    }
     if (citas.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -283,7 +312,7 @@ fun PantallaListaCitas(citas: List<Cita>, onAdd: () -> Unit, onDel: (Cita) -> Un
                                 if (!esHistorico) IconButton(onClick = { onFinish(cita) }) { Icon(Icons.Default.CheckCircle, null, tint = Color.Green) }
                                 if (onCobrar != null) IconButton(onClick = { onCobrar(cita) }) { Icon(Icons.Default.Payments, "Registrar pago", tint = Color.Yellow) }
                                 IconButton(onClick = { onEdit(cita) }) { Icon(Icons.Default.Edit, null, tint = Color.Gray) }
-                                IconButton(onClick = { onDel(cita) }) { Icon(Icons.Default.Delete, null, tint = Color.DarkGray) }
+                                IconButton(onClick = { citaABorrar = cita }) { Icon(Icons.Default.Delete, "Borrar cita", tint = Color.DarkGray) }
                             }
                         }
                         Text("📅 ${cita.fecha} - ⏰ ${cita.hora}", color = Color.Gray)
@@ -319,8 +348,8 @@ fun PantallaListaCitas(citas: List<Cita>, onAdd: () -> Unit, onDel: (Cita) -> Un
                         val totalCita = cita.total(ctxImporte)
                         val pendienteCita = calcularPendiente(totalCita, num(cita.abonado) ?: 0.0)
                         Text("💶 ${cita.detalleTotal(ctxImporte)}", color = Color.White)
-                        Text("✅ Pagado: ${mostrarNum(num(cita.abonado) ?: 0.0)} €", color = Color.Green)
-                        if (pendienteCita > 0) Text("⏳ PENDIENTE: ${mostrarNum(pendienteCita)} €", color = Color.Yellow)
+                        Text("✅ Pagado: ${dinero(num(cita.abonado) ?: 0.0)}", color = Color.Green)
+                        if (pendienteCita > 0) Text("⏳ PENDIENTE: ${dinero(pendienteCita)}", color = Color.Yellow)
                         Text("📞 ${cita.telefono}", color = Color.LightGray)
                         if (cita.notas.isNotEmpty()) Text("📝 ${cita.notas}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                         val ctxCard = LocalContext.current
@@ -381,15 +410,15 @@ fun FormularioCita(cita: Cita?, onSave: (Cita) -> Unit) {
         if (!fijo) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(horas, { horas = it }, label = { Text("Horas") }, modifier = Modifier.weight(1f), colors = colors, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
-                OutlinedTextField(tarifa, { tarifa = it }, label = { Text("Precio/hora €") }, modifier = Modifier.weight(1f), colors = colors, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+                OutlinedTextField(tarifa, { tarifa = it }, label = { Text(conMoneda("Precio/hora")) }, modifier = Modifier.weight(1f), colors = colors, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (fijo) OutlinedTextField(totalFijo, { totalFijo = it }, label = { Text("Precio total €") }, modifier = Modifier.weight(1f), colors = colors, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
-            else OutlinedTextField(mostrarNum(total), {}, label = { Text("Total €") }, modifier = Modifier.weight(1f), colors = colors, readOnly = true)
-            OutlinedTextField(abonado, { abonado = it }, label = { Text("Abonado €") }, modifier = Modifier.weight(1f), colors = colors, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+            if (fijo) OutlinedTextField(totalFijo, { totalFijo = it }, label = { Text(conMoneda("Precio total")) }, modifier = Modifier.weight(1f), colors = colors, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+            else OutlinedTextField(mostrarNum(total), {}, label = { Text(conMoneda("Total")) }, modifier = Modifier.weight(1f), colors = colors, readOnly = true)
+            OutlinedTextField(abonado, { abonado = it }, label = { Text(conMoneda("Abonado")) }, modifier = Modifier.weight(1f), colors = colors, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
         }
-        OutlinedTextField(mostrarNum(pendiente), {}, label = { Text("Pendiente €") }, modifier = Modifier.fillMaxWidth(), colors = colors, readOnly = true)
+        OutlinedTextField(mostrarNum(pendiente), {}, label = { Text(conMoneda("Pendiente")) }, modifier = Modifier.fillMaxWidth(), colors = colors, readOnly = true)
         
         ExposedDropdownMenuBox(
             expanded = expandedRecordatorio,
@@ -429,7 +458,7 @@ fun FormularioCita(cita: Cita?, onSave: (Cita) -> Unit) {
             }
             if(cliente.isNotEmpty() && fechaHora != null) {
                 val (f, h) = fechaHora
-                onSave(Cita(cita?.id ?: UUID.randomUUID().toString(), cliente, tel, f, h, direccion, horas.replace(',', '.'), notas, cita?.terminado?:false, guardarNum(num(abonado) ?: 0.0), guardarNum(pendiente), cita?.fotoPath, recordatorio, email = email, sincronizado = false, estadoCliente = cita?.estadoCliente ?: "", tarifaHora = if (fijo) "" else guardarNum(num(tarifa) ?: precioHora(ctx)), totalFijo = if (fijo) guardarNum(total) else "", fechaCobro = cita?.fechaCobro ?: ""))
+                onSave(Cita(cita?.id ?: UUID.randomUUID().toString(), cliente, tel, f, h, direccion, horas.replace(',', '.'), notas, cita?.terminado?:false, guardarNum(num(abonado) ?: 0.0), guardarNum(pendiente), cita?.fotoPath, recordatorio, email = email, sincronizado = false, estadoCliente = if (cita != null && (f != cita.fecha || h != cita.hora)) "" else cita?.estadoCliente ?: "", /* nueva fecha: vuelve a estar pendiente de confirmar */ tarifaHora = if (fijo) "" else guardarNum(num(tarifa) ?: precioHora(ctx)), totalFijo = if (fijo) guardarNum(total) else "", fechaCobro = cita?.fechaCobro ?: ""))
             }
         }, Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Color.Red)) { Text("GUARDAR") }
     }
@@ -450,16 +479,16 @@ fun DialogoFinalizarCita(cita: Cita, onDismiss: () -> Unit, onConfirm: (Cita) ->
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Cliente: ${cita.cliente}", color = Color.Gray)
-                if (!cita.esPrecioFijo) Text("Horas: ${cita.horas} × ${mostrarNum(cita.precioDeLaCita(ctx))} €/h", color = Color.White)
-                Text("Precio Total: ${mostrarNum(precioTotal)} €", color = Color.White)
-                Text("Ya abonado: ${mostrarNum(yaAbonado)} €", color = Color.Green)
-                Text("Pendiente: ${mostrarNum(calcularPendiente(precioTotal, yaAbonado))} €", color = Color.Yellow)
+                if (!cita.esPrecioFijo) Text("Horas: ${cita.horas} × ${dinero(cita.precioDeLaCita(ctx))}/h", color = Color.White)
+                Text("Precio Total: ${dinero(precioTotal)}", color = Color.White)
+                Text("Ya abonado: ${dinero(yaAbonado)}", color = Color.Green)
+                Text("Pendiente: ${dinero(calcularPendiente(precioTotal, yaAbonado))}", color = Color.Yellow)
                 
                 if (mostrarPartePago) {
                     OutlinedTextField(
                         value = extraAmount,
                         onValueChange = { extraAmount = it },
-                        label = { Text("Abonar ahora (€)") },
+                        label = { Text(conMoneda("Abonar ahora")) },
                         colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                         modifier = Modifier.fillMaxWidth()
@@ -508,8 +537,18 @@ fun DialogoFinalizarCita(cita: Cita, onDismiss: () -> Unit, onConfirm: (Cita) ->
 }
 
 @Composable
-fun PantallaGaleria(citas: List<Cita>, onDel: (Cita) -> Unit) {
+fun PantallaGaleria(citas: List<Cita>, onQuitarFoto: (Cita) -> Unit) {
     val context = LocalContext.current
+    var fotoAQuitar by remember { mutableStateOf<Cita?>(null) }
+    fotoAQuitar?.let { c ->
+        DialogoConfirmar(
+            titulo = "¿Quitar la foto de ${c.cliente}?",
+            texto = "Solo se quita la foto. La cita y sus cobros no se tocan.",
+            boton = "Quitar foto",
+            onConfirmar = { fotoAQuitar = null; onQuitarFoto(c) },
+            onCancelar = { fotoAQuitar = null }
+        )
+    }
     if (citas.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Galería vacía", color = Color.Gray) }
     else LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         items(citas) { cita ->
@@ -521,7 +560,7 @@ fun PantallaGaleria(citas: List<Cita>, onDel: (Cita) -> Unit) {
                         Row {
                             IconButton(onClick = { compartir(context, cita.fotoPath, "com.instagram.android") }) { Icon(Icons.Default.Share, null, tint = Color(0xFFE1306C)) }
                             IconButton(onClick = { compartir(context, cita.fotoPath, "com.whatsapp") }) { Icon(Icons.AutoMirrored.Filled.Send, null, tint = Color(0xFF25D366)) }
-                            IconButton(onClick = { onDel(cita) }) { Icon(Icons.Default.Delete, null, tint = Color.Gray) }
+                            IconButton(onClick = { fotoAQuitar = cita }) { Icon(Icons.Default.Delete, "Quitar foto", tint = Color.Gray) }
                         }
                     }
                 }
@@ -656,69 +695,27 @@ fun mergeBitmaps(captured: Bitmap, frame: Bitmap): Bitmap {
     return result
 }
 
-fun programarAlarmaLocal(context: Context, cita: Cita) {
+// programarAlarmaLocal() y cancelarAlarma() están en Alarmas.kt
+
+/** Borra el archivo de una foto de la agenda (solo si está dentro de la carpeta de la app). */
+fun borrarArchivoFoto(context: Context, ruta: String?) {
     try {
-        val f = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()).parse("${cita.fecha} ${cita.hora}")
-        if (f != null) {
-            val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !am.canScheduleExactAlarms()) {
-                context.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM))
-                return
-            }
-            
-            // 1. Alarma Principal (según las horas elegidas en el recordatorio)
-            val calPrincipal = Calendar.getInstance().apply { time = f; add(Calendar.HOUR_OF_DAY, -cita.recordatorio) }
-            val intentPrincipal = Intent(context, NotificacionReceiver::class.java).apply { 
-                putExtra("CLIENTE", cita.cliente)
-                putExtra("HORA", cita.hora)
-                putExtra("TIEMPO_RESTANTE", "${cita.recordatorio} horas")
-            }
-            val piPrincipal = PendingIntent.getBroadcast(context, cita.id.hashCode(), intentPrincipal, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, calPrincipal.timeInMillis, piPrincipal)
-
-            // 2. Alarma Fija (30 minutos antes)
-            val calMediaHora = Calendar.getInstance().apply { time = f; add(Calendar.MINUTE, -30) }
-            val intentMediaHora = Intent(context, NotificacionReceiver::class.java).apply { 
-                putExtra("CLIENTE", cita.cliente)
-                putExtra("HORA", cita.hora)
-                putExtra("TIEMPO_RESTANTE", "30 minutos")
-            }
-            // Le sumamos un offset grande al ID para que no sobreescriba la principal
-            val piMediaHora = PendingIntent.getBroadcast(context, cita.id.hashCode() + 100000, intentMediaHora, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, calMediaHora.timeInMillis, piMediaHora)
-        }
-    } catch (e: Exception) {}
+        val f = File(Uri.parse(ruta ?: return).path ?: return)
+        val carpeta = context.getExternalFilesDir(null)?.canonicalPath ?: return
+        if (f.canonicalPath.startsWith(carpeta)) f.delete()
+    } catch (e: Exception) { /* si no se puede borrar el archivo, al menos la cita deja de apuntar a él */ }
 }
 
-fun cancelarAlarma(context: Context, cita: Cita) {
-    val am = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-    val piPrincipal = PendingIntent.getBroadcast(context, cita.id.hashCode(), Intent(context, NotificacionReceiver::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-    am.cancel(piPrincipal)
-    
-    val piMediaHora = PendingIntent.getBroadcast(context, cita.id.hashCode() + 100000, Intent(context, NotificacionReceiver::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-    am.cancel(piMediaHora)
-}
-
-class DateVisualTransformation : VisualTransformation {
-    override fun filter(text: AnnotatedString): TransformedText {
-        var out = ""
-        for (i in text.text.indices) { out += text.text[i]; if (i == 1 || i == 3) out += "/" }
-        return TransformedText(AnnotatedString(out), object : OffsetMapping {
-            override fun originalToTransformed(offset: Int): Int = if (offset <= 1) offset else if (offset <= 3) offset + 1 else if (offset <= 8) offset + 2 else 10
-            override fun transformedToOriginal(offset: Int): Int = if (offset <= 2) offset else if (offset <= 5) offset - 1 else if (offset <= 10) offset - 2 else 8
-        })
-    }
-}
-
-class TimeVisualTransformation : VisualTransformation {
-    override fun filter(text: AnnotatedString): TransformedText {
-        var out = ""
-        for (i in text.text.indices) { out += text.text[i]; if (i == 1) out += ":" }
-        return TransformedText(AnnotatedString(out), object : OffsetMapping {
-            override fun originalToTransformed(offset: Int): Int = if (offset <= 1) offset else if (offset <= 4) offset + 1 else 5
-            override fun transformedToOriginal(offset: Int): Int = if (offset <= 2) offset else if (offset <= 5) offset - 1 else 4
-        })
-    }
+@Composable
+fun DialogoConfirmar(titulo: String, texto: String, boton: String, onConfirmar: () -> Unit, onCancelar: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onCancelar,
+        containerColor = Color(0xFF1A1A1A),
+        title = { Text(titulo, color = Color.White) },
+        text = { Text(texto, color = Color.Gray) },
+        confirmButton = { Button(onClick = onConfirmar, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB71C1C))) { Text(boton, color = Color.White) } },
+        dismissButton = { TextButton(onClick = onCancelar) { Text("Cancelar", color = Color.White) } }
+    )
 }
 
 // La pestaña $ (PantallaGanancias) está en Finanzas.kt

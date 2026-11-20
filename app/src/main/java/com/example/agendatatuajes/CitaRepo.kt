@@ -25,6 +25,8 @@ object CitaRepo {
             )
             c
         }
+        // Avisos siempre al día: si la cita se terminó o el cliente la canceló se quitan; si no, se reprograman
+        programarAlarmaLocal(context, guardada, pedirPermiso = false)
         SyncN8n.solicitar(context)
         return guardada
     }
@@ -46,6 +48,7 @@ object CitaRepo {
             )
             db.citaDao().borrarCita(actual)
         }
+        cancelarAlarma(context, cita) // antes el aviso de una cita borrada seguía sonando
         SyncN8n.solicitar(context)
     }
 }

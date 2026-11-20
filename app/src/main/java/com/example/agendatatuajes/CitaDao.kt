@@ -25,6 +25,10 @@ interface CitaDao {
     @Query("SELECT * FROM citas_tatuajes WHERE fechaCobro != '' ORDER BY substr(fechaCobro, 7, 4) || substr(fechaCobro, 4, 2) || substr(fechaCobro, 1, 2) DESC")
     fun obtenerGanancias(): Flow<List<Cita>>
 
+    /** Citas a las que hay que (re)programar avisos al encender el móvil o abrir la app. */
+    @Query("SELECT * FROM citas_tatuajes WHERE terminado = 0")
+    suspend fun pendientesParaAvisos(): List<Cita>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertarCita(cita: Cita)
 

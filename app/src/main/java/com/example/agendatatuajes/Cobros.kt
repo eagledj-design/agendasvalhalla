@@ -19,7 +19,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.max
-import kotlin.math.roundToLong
 
 /*
  * Modo de cobro, precio por hora y cálculo de cobros.
@@ -53,22 +52,7 @@ fun guardarModoCobro(context: Context, modo: String) {
     context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_MODO, modo).apply()
 }
 
-/** Convierte "12,5" o "12.5" en 12.5 (null si no es un número). */
-fun num(texto: String?): Double? = texto?.trim()?.replace(',', '.')?.toDoubleOrNull()
-
-/** Número para guardar: "36", "36.5", "36.75" (punto decimal, máx. 2 decimales). */
-fun guardarNum(valor: Double): String {
-    val centimos = (valor * 100).roundToLong()
-    return if (centimos % 100 == 0L) (centimos / 100).toString()
-    else String.format(Locale.US, "%.2f", centimos / 100.0).trimEnd('0')
-}
-
-/** Número para mostrar: "36", "36,50". */
-fun mostrarNum(valor: Double): String {
-    val centimos = (valor * 100).roundToLong()
-    return if (centimos % 100 == 0L) (centimos / 100).toString()
-    else String.format(Locale("es", "ES"), "%.2f", centimos / 100.0)
-}
+// num(), guardarNum(), mostrarNum() y la moneda están en Importes.kt
 
 /** Precio por hora general de la agenda (Ajustes o, si no hay, config.xml). */
 fun precioHora(context: Context): Double {
@@ -90,10 +74,10 @@ fun Cita.total(context: Context): Double =
     if (esPrecioFijo) num(totalFijo) ?: 0.0
     else (num(horas) ?: 0.0) * precioDeLaCita(context)
 
-/** "3 h × 15 €/h = 45 €" o "45 €" según el tipo de cobro de la cita. */
+/** "3 h × 15 €/h = 45 €" o "45 €" (en Colombia "3 h × $15.000/h = $45.000") según el tipo de cobro. */
 fun Cita.detalleTotal(context: Context): String =
-    if (esPrecioFijo) "${mostrarNum(total(context))} €"
-    else "${horas.ifBlank { "0" }} h × ${mostrarNum(precioDeLaCita(context))} €/h = ${mostrarNum(total(context))} €"
+    if (esPrecioFijo) dinero(total(context))
+    else "${horas.ifBlank { "0" }} h × ${dinero(precioDeLaCita(context))}/h = ${dinero(total(context))}"
 
 fun calcularPendiente(total: Double, abonado: Double): Double = max(0.0, total - abonado)
 
@@ -138,7 +122,7 @@ fun DialogoAjustes(onDismiss: () -> Unit) {
                     OutlinedTextField(
                         value = precio,
                         onValueChange = { precio = it },
-                        label = { Text("Precio por hora (€)") },
+                        label = { Text(conMoneda("Precio por hora")) },
                         singleLine = true,
                         isError = !valido,
                         colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White),
@@ -182,11 +166,11 @@ fun DialogoRegistrarPago(cita: Cita, onDismiss: () -> Unit, onConfirm: (Cita) ->
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Cliente: ${cita.cliente}", color = Color.Gray)
                 Text("Total: ${cita.detalleTotal(ctx)}", color = Color.White)
-                Text("Ya abonado: ${mostrarNum(abonado)} €", color = Color.Green)
-                Text("Pendiente: ${mostrarNum(pendiente)} €", color = Color.Yellow)
+                Text("Ya abonado: ${dinero(abonado)}", color = Color.Green)
+                Text("Pendiente: ${dinero(pendiente)}", color = Color.Yellow)
                 OutlinedTextField(
                     value = importe, onValueChange = { importe = it },
-                    label = { Text("Abona ahora (€)") }, singleLine = true,
+                    label = { Text(conMoneda("Abona ahora")) }, singleLine = true,
                     colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     modifier = Modifier.fillMaxWidth()
